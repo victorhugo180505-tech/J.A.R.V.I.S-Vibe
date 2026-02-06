@@ -88,11 +88,29 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         return
 
+class HttpBridgeServer:
+    def __init__(self):
+        self._httpd = HTTPServer((HTTP_HOST, HTTP_PORT), Handler)
+        self._tcp_thread = threading.Thread(target=tcp_accept_loop, daemon=True)
+
+    def start(self):
+        self._tcp_thread.start()
+        threading.Thread(target=self._httpd.serve_forever, daemon=True).start()
+
+    def stop(self):
+        try:
+            self._httpd.shutdown()
+        except Exception:
+            pass
+
 def main():
-    t = threading.Thread(target=tcp_accept_loop, daemon=True)
-    t.start()
-    httpd = HTTPServer((HTTP_HOST, HTTP_PORT), Handler)
-    httpd.serve_forever()
+    server = HttpBridgeServer()
+    server.start()
+    try:
+        while True:
+            threading.Event().wait(3600)
+    except KeyboardInterrupt:
+        server.stop()
 
 if __name__ == "__main__":
     main()

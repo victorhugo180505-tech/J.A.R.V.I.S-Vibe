@@ -7,9 +7,16 @@
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
-  <button id="unlock" style="position:fixed;top:10px;left:10px;z-index:9999;">
-  Activar voz
-</button>
+  <div id="controls">
+    <button id="toggle-mic">Mic</button>
+    <button id="toggle-audio">Audio</button>
+    <button id="toggle-vision">Visión</button>
+    <div id="listen-indicator">
+      <span id="listen-dot"></span>
+      <span id="listen-text">Mic apagado</span>
+    </div>
+    <div id="control-status" aria-live="polite"></div>
+  </div>
   <canvas id="c"></canvas>
 
   <!-- Import maps (CDN) -->

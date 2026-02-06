@@ -1,2 +1,82 @@
 html, body { margin:0; height:100%; overflow:hidden; background:#111; }
 #c { width:100%; height:100%; display:block; }
+
+#controls {
+  position: fixed;
+  top: 10px;
+  left: 10px;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 10px;
+  color: #fff;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  font-size: 12px;
+  backdrop-filter: blur(6px);
+}
+
+#controls button {
+  background: rgba(255, 255, 255, 0.15);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #fff;
+  padding: 6px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
+
+#controls button:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+#controls button.is-on {
+  background: rgba(80, 200, 120, 0.35);
+  border-color: rgba(80, 200, 120, 0.75);
+  color: #eafff1;
+}
+
+#controls button.is-off {
+  background: rgba(220, 80, 80, 0.25);
+  border-color: rgba(220, 80, 80, 0.55);
+  color: #ffecec;
+}
+
+#control-status {
+  margin-left: 8px;
+  opacity: 0.85;
+  white-space: nowrap;
+}
+
+#listen-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #d7d7d7;
+  font-size: 11px;
+}
+
+#listen-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #6b6b6b;
+  box-shadow: 0 0 6px rgba(0, 0, 0, 0.4);
+}
+
+#listen-indicator.is-on #listen-dot {
+  background: #48d77f;
+  box-shadow: 0 0 8px rgba(72, 215, 127, 0.8);
+}
+
+#listen-indicator.is-wake #listen-dot {
+  background: #35f2ff;
+  box-shadow: 0 0 10px rgba(53, 242, 255, 0.9);
+}
