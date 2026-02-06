@@ -38,16 +38,30 @@ def test_health_ok():
 def test_state_keys_present():
     status, payload = _request_json("GET", "/state")
     assert status == 200
-    for key in ("audio_enabled", "mic_enabled", "vision_enabled", "wake_active"):
+    for key in (
+        "audio_enabled",
+        "mic_enabled",
+        "vision_enabled",
+        "wake_active",
+        "conversation_state",
+        "last_user_utterance",
+        "last_jarvis_utterance",
+    ):
         assert key in payload
 
 
 @pytest.mark.contract
 def test_mic_toggle_flips_state():
-    _, first = _request_json("POST", "/mic/toggle")
-    assert "mic_enabled" in first
+    _, first_toggle = _request_json("POST", "/mic/toggle")
+    assert "mic_enabled" in first_toggle
 
-    _, second = _request_json("POST", "/mic/toggle")
-    assert "mic_enabled" in second
+    _, first_state = _request_json("GET", "/state")
+    expected_first = "LISTENING" if first_toggle["mic_enabled"] else "IDLE"
+    assert first_state["conversation_state"] == expected_first
 
-    assert first["mic_enabled"] != second["mic_enabled"]
+    _, second_toggle = _request_json("POST", "/mic/toggle")
+    assert "mic_enabled" in second_toggle
+
+    _, second_state = _request_json("GET", "/state")
+    expected_second = "LISTENING" if second_toggle["mic_enabled"] else "IDLE"
+    assert second_state["conversation_state"] == expected_second
