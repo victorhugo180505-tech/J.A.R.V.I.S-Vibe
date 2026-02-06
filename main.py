@@ -407,6 +407,7 @@ server_handles = start_local_servers()
 
 avatar = AvatarWSClient("ws://127.0.0.1:8765")
 avatar.start()
+state.set_state_change_handler(avatar.send_json)
 control_server = ControlServer(state)
 control_server.start()
 whisper_listener = AzureSpeechListener(

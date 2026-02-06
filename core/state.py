@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from threading import Lock
+from typing import Callable, Optional
 
 
 CONVERSATION_STATES = {
@@ -23,6 +24,7 @@ class JarvisState:
     last_user_utterance: str | None = None
     last_jarvis_utterance: str | None = None
     lock: Lock = field(default_factory=Lock, repr=False)
+    _state_change_handler: Optional[Callable[[dict], None]] = field(default=None, repr=False)
 
     def toggle_audio(self) -> bool:
         with self.lock:
@@ -35,6 +37,7 @@ class JarvisState:
             self._set_conversation_state_locked(
                 "LISTENING" if self.mic_enabled else "IDLE"
             )
+            self._emit_state_locked()
             return self.mic_enabled
 
     def toggle_vision(self) -> bool:
@@ -69,6 +72,7 @@ class JarvisState:
         if prev != next_state:
             print(f"[state] conversation_state {prev} -> {next_state}")
             self.conversation_state = next_state
+            self._emit_state_locked()
 
     def set_last_user_utterance(self, text: str | None) -> None:
         with self.lock:
@@ -77,6 +81,26 @@ class JarvisState:
     def set_last_jarvis_utterance(self, text: str | None) -> None:
         with self.lock:
             self.last_jarvis_utterance = text
+
+    def set_state_change_handler(self, handler: Optional[Callable[[dict], None]]) -> None:
+        with self.lock:
+            self._state_change_handler = handler
+
+    def _emit_state_locked(self) -> None:
+        if not self._state_change_handler:
+            return
+        payload = {
+            "type": "state",
+            "conversation_state": self.conversation_state,
+            "mic_enabled": self.mic_enabled,
+            "audio_enabled": self.audio_enabled,
+            "vision_enabled": self.vision_enabled,
+            "wake_active": self.wake_active,
+        }
+        try:
+            self._state_change_handler(payload)
+        except Exception as exc:
+            print(f"[state] ⚠️ Error enviando state WS: {exc}")
 
 
 state = JarvisState()
