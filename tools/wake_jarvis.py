@@ -16,7 +16,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-import psutil
+try:
+    import psutil
+except ModuleNotFoundError:
+    psutil = None
+    print("[wake_jarvis] ⚠️ 'psutil' no está instalado. Se omitirá el check de Tauri.", flush=True)
 import requests
 
 from core.wake_word import WakeWordListener
@@ -136,6 +140,8 @@ def wait_for_backend(timeout: float = 15.0) -> bool:
 # -------------------------------------------------
 
 def is_tauri_running() -> bool:
+    if psutil is None:
+        return False
     for proc in psutil.process_iter(["name"]):
         try:
             name = (proc.info.get("name") or "").lower()

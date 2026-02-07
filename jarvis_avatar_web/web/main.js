@@ -634,6 +634,64 @@ async function playAzureTTS(audioB64, visemes = []) {
 // -----------------------------
 const WS_URL = "ws://127.0.0.1:8765";
 let ws = null;
+const subtitleContainer = document.getElementById("subtitle-overlay");
+const subtitleQueue = [];
+const subtitleTimers = new Map();
+let subtitleId = 0;
+
+function clearSubtitleTimers(id) {
+  const timers = subtitleTimers.get(id);
+  if (!timers) return;
+  clearTimeout(timers.fadeTimer);
+  clearTimeout(timers.removeTimer);
+  subtitleTimers.delete(id);
+}
+
+function renderSubtitleQueue() {
+  if (!subtitleContainer) return;
+  subtitleContainer.innerHTML = "";
+  subtitleQueue.forEach((item) => {
+    const line = document.createElement("div");
+    line.className = `subtitle-line role-${item.role || "user"} is-visible`;
+    line.dataset.subtitleId = String(item.id);
+    line.textContent = item.text;
+    subtitleContainer.appendChild(line);
+  });
+}
+
+function removeSubtitle(id) {
+  clearSubtitleTimers(id);
+  const idx = subtitleQueue.findIndex((item) => item.id === id);
+  if (idx >= 0) subtitleQueue.splice(idx, 1);
+  renderSubtitleQueue();
+}
+
+function enqueueSubtitle(role, text) {
+  if (!subtitleContainer) return;
+  const cleaned = (text || "").trim();
+  if (!cleaned) return;
+
+  const id = subtitleId++;
+  subtitleQueue.push({ id, role: role || "user", text: cleaned });
+
+  while (subtitleQueue.length > 2) {
+    const removed = subtitleQueue.shift();
+    if (removed) clearSubtitleTimers(removed.id);
+  }
+
+  renderSubtitleQueue();
+
+  const fadeTimer = setTimeout(() => {
+    const el = subtitleContainer.querySelector(`[data-subtitle-id="${id}"]`);
+    if (el) el.classList.add("is-fading");
+  }, 4000);
+
+  const removeTimer = setTimeout(() => {
+    removeSubtitle(id);
+  }, 5000);
+
+  subtitleTimers.set(id, { fadeTimer, removeTimer });
+}
 
 function connectWS() {
   ws = new WebSocket(WS_URL);
@@ -707,6 +765,11 @@ function connectWS() {
       if (typeof msg.audio_b64 === "string") {
         playAzureTTS(msg.audio_b64, Array.isArray(msg.visemes) ? msg.visemes : []);
       }
+      return;
+    }
+
+    if (msg.type === "subtitle" && typeof msg.text === "string") {
+      enqueueSubtitle(msg.role, msg.text);
       return;
     }
   };
