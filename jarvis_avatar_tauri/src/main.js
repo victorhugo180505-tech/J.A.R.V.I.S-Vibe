@@ -14,6 +14,7 @@ const toggleMicBtn = document.getElementById("toggle-mic");
 const toggleAudioBtn = document.getElementById("toggle-audio");
 const toggleVisionBtn = document.getElementById("toggle-vision");
 const subtitleContainer = document.getElementById("subtitle-overlay");
+const presenceIndicator = document.getElementById("presence-indicator");
 
 const CONTROL_BASE = "http://127.0.0.1:8780";
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
@@ -135,6 +136,9 @@ let speaking = false;
 let mood = "neutral";      // se queda hasta cambiar
 let burst = null;          // “micro-emoción” breve
 let burstT = 0;
+let presenceState = "IDLE";
+let presenceTarget = "IDLE";
+let presenceBlend = 0;
 
 // Expresiones disponibles (auto)
 let expressionKeys = [];
@@ -225,6 +229,49 @@ function setExpression(key, value = 1.0) {
     return true;
   } catch {
     return false;
+  }
+}
+
+function applyPresenceState(state) {
+  const next = (state || "IDLE").toUpperCase();
+  presenceTarget = next;
+  presenceBlend = 0;
+
+  if (!presenceIndicator) return;
+
+  presenceIndicator.classList.remove(
+    "state-idle",
+    "state-listening",
+    "state-thinking",
+    "state-speaking",
+    "presence-pulse",
+  );
+
+  if (next === "IDLE") {
+    presenceIndicator.textContent = "";
+    presenceIndicator.classList.remove("is-visible");
+    return;
+  }
+
+  presenceIndicator.classList.add("is-visible");
+
+  if (next === "LISTENING") {
+    presenceIndicator.textContent = "Escuchando…";
+    presenceIndicator.classList.add("state-listening", "presence-pulse");
+  } else if (next === "THINKING") {
+    presenceIndicator.textContent = "Pensando…";
+    presenceIndicator.classList.add("state-thinking", "presence-pulse");
+  } else if (next === "SPEAKING") {
+    presenceIndicator.textContent = "Hablando…";
+    presenceIndicator.classList.add("state-speaking");
+  }
+}
+
+function updatePresence(dt) {
+  if (presenceState === presenceTarget) return;
+  presenceBlend = Math.min(1, presenceBlend + dt * 2.5);
+  if (presenceBlend >= 1) {
+    presenceState = presenceTarget;
   }
 }
 
@@ -775,6 +822,9 @@ function connectWS() {
         mouseNDC.x = msg.mouse.x;
         mouseNDC.y = msg.mouse.y;
       }
+      if (typeof msg.conversation_state === "string") {
+        applyPresenceState(msg.conversation_state);
+      }
       if (msg.conversation_state === "LISTENING") {
         clearTtsQueue();
         stopCurrentAudio();
@@ -883,6 +933,7 @@ function animate() {
   applyMicroGaze(dt);
   updateLookTarget();
   updateBurst(dt);
+  updatePresence(dt);
 
   if (vrm) {
     applyBreathing(vrm, dt);
