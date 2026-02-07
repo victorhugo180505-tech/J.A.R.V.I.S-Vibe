@@ -617,6 +617,7 @@ async function playAzureTTS(audioB64, visemes = []) {
     speaking = false;
     clearVisemeTimers();
     setMouthTargetsOnly(null, 0.0);
+    handleAvatarSpeechEnd();
   };
 
   try {
@@ -638,6 +639,8 @@ const subtitleContainer = document.getElementById("subtitle-overlay");
 const subtitleQueue = [];
 const subtitleTimers = new Map();
 let subtitleId = 0;
+const subtitleFadeDelayMs = 4000;
+const subtitleRemoveDelayMs = 5000;
 
 function clearSubtitleTimers(id) {
   const timers = subtitleTimers.get(id);
@@ -666,13 +669,46 @@ function removeSubtitle(id) {
   renderSubtitleQueue();
 }
 
+function removeSubtitlesByRole(role, { fade = false, delay = 0 } = {}) {
+  const roleNorm = (role || "").toLowerCase();
+  const items = subtitleQueue.filter((item) => item.role === roleNorm);
+  if (!items.length) return;
+
+  items.forEach((item) => {
+    clearSubtitleTimers(item.id);
+    if (fade) {
+      const fadeTimer = setTimeout(() => {
+        const el = subtitleContainer?.querySelector(`[data-subtitle-id="${item.id}"]`);
+        if (el) el.classList.add("is-fading");
+      }, delay);
+
+      const removeTimer = setTimeout(() => {
+        removeSubtitle(item.id);
+      }, delay + 500);
+
+      subtitleTimers.set(item.id, { fadeTimer, removeTimer });
+      return;
+    }
+    removeSubtitle(item.id);
+  });
+}
+
+function handleAvatarSpeechStart() {
+  removeSubtitlesByRole("user", { fade: true });
+}
+
+function handleAvatarSpeechEnd() {
+  removeSubtitlesByRole("jarvis", { fade: true, delay: 700 });
+}
+
 function enqueueSubtitle(role, text) {
   if (!subtitleContainer) return;
   const cleaned = (text || "").trim();
   if (!cleaned) return;
 
   const id = subtitleId++;
-  subtitleQueue.push({ id, role: role || "user", text: cleaned });
+  const roleNorm = (role || "user").toLowerCase();
+  subtitleQueue.push({ id, role: roleNorm, text: cleaned });
 
   while (subtitleQueue.length > 2) {
     const removed = subtitleQueue.shift();
@@ -681,16 +717,18 @@ function enqueueSubtitle(role, text) {
 
   renderSubtitleQueue();
 
-  const fadeTimer = setTimeout(() => {
-    const el = subtitleContainer.querySelector(`[data-subtitle-id="${id}"]`);
-    if (el) el.classList.add("is-fading");
-  }, 4000);
+  if (roleNorm !== "user" && roleNorm !== "jarvis") {
+    const fadeTimer = setTimeout(() => {
+      const el = subtitleContainer.querySelector(`[data-subtitle-id="${id}"]`);
+      if (el) el.classList.add("is-fading");
+    }, subtitleFadeDelayMs);
 
-  const removeTimer = setTimeout(() => {
-    removeSubtitle(id);
-  }, 5000);
+    const removeTimer = setTimeout(() => {
+      removeSubtitle(id);
+    }, subtitleRemoveDelayMs);
 
-  subtitleTimers.set(id, { fadeTimer, removeTimer });
+    subtitleTimers.set(id, { fadeTimer, removeTimer });
+  }
 }
 
 function connectWS() {
@@ -763,6 +801,7 @@ function connectWS() {
       }
 
       if (typeof msg.audio_b64 === "string") {
+        handleAvatarSpeechStart();
         playAzureTTS(msg.audio_b64, Array.isArray(msg.visemes) ? msg.visemes : []);
       }
       return;
