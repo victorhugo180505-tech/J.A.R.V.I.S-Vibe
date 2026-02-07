@@ -199,6 +199,14 @@ function updateCameraRigBase() {
   cameraRigBase.fov = camera.fov;
 }
 
+function getHumanoidBone(humanoid, name) {
+  return (
+    humanoid?.getNormalizedBoneNode?.(name) ||
+    humanoid?.getRawBoneNode?.(name) ||
+    null
+  );
+}
+
 function ensureCameraDebugMarker() {
   if (!cameraDebug.enabled || cameraDebug.marker) return;
   const geo = new THREE.SphereGeometry(0.015, 16, 16);
@@ -254,6 +262,14 @@ function frameModel() {
   }
 }
 
+function getFallbackAnchor() {
+  if (vrm?.scene) {
+    modelBox.setFromObject(vrm.scene);
+    return modelBox.getCenter(new THREE.Vector3());
+  }
+  return cameraTarget.clone();
+}
+
 function validateCameraPose() {
   if (!modelRadius) return;
   const pos = camera.position;
@@ -286,11 +302,9 @@ function validateCameraPose() {
 }
 
 function getHeadAnchor() {
-  const head =
-    vrm?.humanoid?.getNormalizedBoneNode("head") ||
-    vrm?.humanoid?.getBoneNode("head");
-  if (!head) return cameraTarget.clone();
-  return head.getWorldPosition(new THREE.Vector3());
+  const head = getHumanoidBone(vrm?.humanoid, "head");
+  if (!head) return getFallbackAnchor();
+  return head.getWorldPosition(new THREE.Vector3()) ?? getFallbackAnchor();
 }
 
 function updateCameraRig(dt, time) {
@@ -364,9 +378,11 @@ function updateCameraRig(dt, time) {
   }
 
   if (typeof controls !== "undefined" && controls) {
-    controls.target.copy(cameraTarget);
-    controls.object.position.copy(camera.position);
-    controls.update();
+    controls.target?.copy(cameraTarget);
+    if (controls.object?.position) {
+      controls.object.position.copy(camera.position);
+    }
+    controls.update?.();
   }
 }
 
@@ -575,11 +591,11 @@ function applyPresencePose(dt, time) {
 
   const humanoid = vrm.humanoid;
   if (!humanoid) return;
-  const hips = humanoid.getBoneNode("hips");
-  const spine = humanoid.getBoneNode("spine");
-  const chest = humanoid.getBoneNode("chest") || humanoid.getBoneNode("upperChest");
-  const neck = humanoid.getBoneNode("neck");
-  const head = humanoid.getBoneNode("head");
+  const hips = getHumanoidBone(humanoid, "hips");
+  const spine = getHumanoidBone(humanoid, "spine");
+  const chest = getHumanoidBone(humanoid, "chest") || getHumanoidBone(humanoid, "upperChest");
+  const neck = getHumanoidBone(humanoid, "neck");
+  const head = getHumanoidBone(humanoid, "head");
 
   if (hips) {
     hips.position.y = presencePose.offset.y;
@@ -1293,9 +1309,13 @@ function animate() {
   applyMicroGaze(dt);
   updateLookTarget();
   updateBurst(dt);
-  updatePresence(dt);
-  applyPresencePose(dt, clock.elapsedTime);
-  updateCameraRig(dt, clock.elapsedTime);
+  try {
+    updatePresence(dt);
+    applyPresencePose(dt, clock.elapsedTime);
+    updateCameraRig(dt, clock.elapsedTime);
+  } catch (err) {
+    console.warn("[CAM] update loop error, keeping render alive", err);
+  }
   cameraValidateCounter += 1;
   if (cameraValidateCounter % 30 === 0) {
     validateCameraPose();
