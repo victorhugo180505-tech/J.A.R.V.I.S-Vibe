@@ -337,7 +337,7 @@ def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
     tts_text = prepare_tts_text(speech)
 
     add_message("assistant", speech)
-    emit_subtitle(state, avatar.send_json, "jarvis", speech)
+    state.set_last_jarvis_utterance(speech)
     _safe_print(f"Jarvis [{task_type}] ({emo}): {speech}")
 
     # 1) mood persistente
@@ -366,6 +366,7 @@ def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
                 emotion=emo,
                 synthesize_fn=synthesize_chunk,
                 send_fn=avatar.send_raw,
+                subtitle_fn=lambda chunk: emit_subtitle(state, avatar.send_json, "jarvis", chunk),
                 session_getter=get_tts_session_id,
                 session_token=session_token,
                 max_audio_b64=MAX_AUDIO_B64,
