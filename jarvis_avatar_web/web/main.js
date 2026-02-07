@@ -664,6 +664,10 @@ async function playAzureTTS(audioB64, visemes = []) {
     clearVisemeTimers();
     setMouthTargetsOnly(null, 0.0);
     handleAvatarSpeechEnd();
+    if (currentTtsChunk?.is_last && ws?.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "tts_ended", tts_session_id: currentTtsChunk.tts_session_id }));
+    }
+    currentTtsChunk = null;
     playNextFromQueue();
   };
 
@@ -784,6 +788,7 @@ function enqueueSubtitle(role, text) {
 // -----------------------------
 const ttsQueue = [];
 let currentTtsSession = null;
+let currentTtsChunk = null;
 
 function clearTtsQueue() {
   ttsQueue.length = 0;
@@ -795,6 +800,7 @@ function stopCurrentAudio() {
     currentSrc = null;
   }
   speaking = false;
+  currentTtsChunk = null;
   clearVisemeTimers();
   setMouthTargetsOnly(null, 0.0);
 }
@@ -803,6 +809,7 @@ function playNextFromQueue() {
   if (speaking || ttsQueue.length === 0) return;
   const next = ttsQueue.shift();
   if (!next) return;
+  currentTtsChunk = next;
   if (next.subtitle) enqueueSubtitle("jarvis", next.subtitle);
   playAzureTTS(next.audio_b64, Array.isArray(next.visemes) ? next.visemes : []);
 }
@@ -896,6 +903,8 @@ function connectWS() {
           audio_b64: msg.audio_b64,
           visemes: msg.visemes,
           subtitle: typeof msg.subtitle === "string" ? msg.subtitle : "",
+          tts_session_id: msg.tts_session_id,
+          is_last: Boolean(msg.is_last),
         });
         handleAvatarSpeechStart();
         if (!speaking) playNextFromQueue();

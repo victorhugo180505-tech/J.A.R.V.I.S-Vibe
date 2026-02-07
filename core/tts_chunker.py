@@ -138,7 +138,6 @@ def send_tts_chunks(
         if subtitle_fn:
             subtitle_fn(chunk)
 
-        seq = sent + 1
         sent += 1
         is_last = (len(pending) == 0)
         send_fn({

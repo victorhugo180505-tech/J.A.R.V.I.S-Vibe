@@ -26,6 +26,7 @@ def test_send_tts_chunks_multiple_sends():
     count = send_tts_chunks(
         long_text,
         emotion="neutral",
+        session_id="session-1",
         synthesize_fn=synthesize_fn,
         send_fn=send_fn,
         session_getter=get_session,
@@ -61,6 +62,7 @@ def test_send_tts_chunks_cancel_midway():
     count = send_tts_chunks(
         long_text,
         emotion="neutral",
+        session_id="session-1",
         synthesize_fn=synthesize_fn,
         send_fn=cancel_after_first,
         session_getter=get_session,

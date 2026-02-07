@@ -23,6 +23,7 @@ def test_oversize_chunks_are_split_and_sent():
     count = send_tts_chunks(
         "Hola, mundo. " * 20,
         emotion="neutral",
+        session_id="session-1",
         synthesize_fn=synthesize_fn,
         send_fn=send_fn,
         subtitle_fn=subtitle_fn,
@@ -59,6 +60,7 @@ def test_subtitle_before_each_chunk():
     send_tts_chunks(
         "Hola. " * 10,
         emotion="neutral",
+        session_id="session-1",
         synthesize_fn=synthesize_fn,
         send_fn=send_fn,
         subtitle_fn=subtitle_fn,
@@ -96,6 +98,7 @@ def test_cancel_stops_remaining_chunks():
     count = send_tts_chunks(
         "Hola. " * 20,
         emotion="neutral",
+        session_id="session-1",
         synthesize_fn=synthesize_fn,
         send_fn=send_fn,
         subtitle_fn=subtitle_fn,

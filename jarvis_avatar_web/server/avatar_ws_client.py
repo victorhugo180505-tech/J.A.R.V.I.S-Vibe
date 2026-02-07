@@ -10,11 +10,12 @@ WS_URL = "ws://127.0.0.1:8765"
 
 
 class AvatarWSClient:
-    def __init__(self, url: str = WS_URL):
+    def __init__(self, url: str = WS_URL, on_message=None):
         self.url = url
         self._q: Queue[dict] = Queue()
         self._thread = None
         self._stop = threading.Event()
+        self._on_message = on_message
 
         self._connected = False
         self._last_err = ""
@@ -40,6 +41,9 @@ class AvatarWSClient:
         }
 
     # --- API de alto nivel ---
+    def set_on_message(self, handler):
+        self._on_message = handler
+
     def send_emotion(self, emotion: str):
         if not emotion:
             return
@@ -113,9 +117,19 @@ class AvatarWSClient:
     async def _receiver_loop(self, ws):
         # No usamos mensajes entrantes aquí, pero leer mantiene sano el socket
         try:
-            async for _ in ws:
+            async for raw in ws:
                 if self._stop.is_set():
                     break
+                if not self._on_message:
+                    continue
+                try:
+                    msg = json.loads(raw)
+                except Exception:
+                    continue
+                try:
+                    self._on_message(msg)
+                except Exception:
+                    continue
         except Exception as e:
             self._connected = False
             self._last_err = repr(e)

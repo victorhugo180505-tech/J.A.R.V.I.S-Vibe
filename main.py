@@ -34,6 +34,7 @@ from jarvis_avatar_web.server import mouse_stream_auto
 from jarvis_avatar_web.server import ws_server as avatar_ws_server
 from native_bridge import http_bridge
 from core.control_server import ControlServer
+from core.conversation_flow import apply_speaking, apply_thinking, handle_tts_ended
 from core.state import state
 from core.stt_azure import AzureSpeechListener
 from core.subtitles import emit_subtitle
@@ -308,6 +309,7 @@ def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
     if emit_user_subtitle:
         emit_subtitle(state, avatar.send_json, "user", user_text)
     add_message("user", user_text)
+    apply_thinking(state)
 
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     messages.extend(get_conversation())
@@ -348,6 +350,7 @@ def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
     if tts_text and have_azure_config():
         try:
             from core.azure_tts import synthesize_tts_with_visemes
+            apply_speaking(state)
 
             # Anti-1009: limita payload grande
             MAX_AUDIO_B64 = 900_000  # ~0.9MB para evitar frames >1MB
@@ -424,7 +427,15 @@ def on_state_change(payload: dict) -> None:
     if payload.get("conversation_state") == "LISTENING":
         cancel_tts_session()
 
+def on_avatar_message(msg: dict) -> None:
+    if msg.get("type") != "tts_ended":
+        return
+    session_id = msg.get("tts_session_id")
+    if session_id and session_id == tts_session_id.get("key"):
+        handle_tts_ended(state)
+
 state.set_state_change_handler(on_state_change)
+avatar.set_on_message(on_avatar_message)
 control_server = ControlServer(state)
 control_server.start()
 whisper_listener = AzureSpeechListener(
