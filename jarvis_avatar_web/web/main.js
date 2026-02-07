@@ -430,6 +430,28 @@ function updateEyeLookController(dt) {
   }
 }
 
+function logEyeDownDebug() {
+  const humanoid = vrm?.humanoid;
+  if (!humanoid) {
+    console.log("[EYE] debug: humanoid missing");
+    return;
+  }
+  const leftEye = getHumanoidBone(humanoid, "leftEye");
+  const rightEye = getHumanoidBone(humanoid, "rightEye");
+  const head = getHumanoidBone(humanoid, "head");
+  const eye = leftEye || rightEye || head;
+  const eyePos = eye?.getWorldPosition(new THREE.Vector3()) ?? cameraTarget.clone();
+  const targetPos = lookTarget.getWorldPosition(new THREE.Vector3());
+  const dir = targetPos.clone().sub(eyePos).normalize();
+  const pitch = Math.asin(clamp(dir.y, -1, 1));
+  console.log("[EYE] debug targetY=%s eyeY=%s pitchDeg=%s pitchNegative=%s", 
+    targetPos.y.toFixed(3),
+    eyePos.y.toFixed(3),
+    THREE.MathUtils.radToDeg(pitch).toFixed(2),
+    pitch < 0
+  );
+}
+
 function getHumanoidBone(humanoid, name) {
   return (
     humanoid?.getNormalizedBoneNode?.(name) ||
@@ -1594,15 +1616,10 @@ window.addEventListener("keydown", (event) => {
       fov: camera.fov,
     });
   }
+  if (key === "y") {
+    logEyeDownDebug();
+  }
   if (ENABLE_EXPERIMENTAL_EYES) {
-    if (key === "y") {
-      eyeLookState.forceUntil = performance.now() + 2000;
-      eyeLookState.forceDir = -1;
-    }
-    if (key === "u") {
-      eyeLookState.forceUntil = performance.now() + 2000;
-      eyeLookState.forceDir = 1;
-    }
     if (key === "i") {
       eyeLookState.pitchAxisIndex = (eyeLookState.pitchAxisIndex + 1) % 4;
       console.log("[EYE] pitch axis", eyeLookState.pitchAxisIndex);
