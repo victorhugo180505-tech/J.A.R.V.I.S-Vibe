@@ -37,6 +37,7 @@ from core.control_server import ControlServer
 from core.state import state
 from core.stt_azure import AzureSpeechListener
 from core.subtitles import emit_subtitle
+from core.tts_chunker import send_tts_chunks
 
 # ===============================
 # Azure Speech (DEV LOCAL)
@@ -347,35 +348,29 @@ def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
         try:
             from core.azure_tts import synthesize_tts_with_visemes
 
-            audio_b64, visemes = synthesize_tts_with_visemes(
-                tts_text,
-                key=AZURE_KEY,
-                region=AZURE_REGION,
-                voice=AZURE_VOICE
-            )
-
-            if not audio_b64:
-                raise RuntimeError("Azure devolvió audio vacío (audio_b64='').")
-
-            _safe_print(f"[AZURE] OK audio_b64_len={len(audio_b64)} visemes={len(visemes)}")
-
-            if not hasattr(avatar, "send_raw"):
-                raise RuntimeError("AvatarWSClient no tiene send_raw(). Agrega send_raw() en avatar_ws_client.py")
-
             # Anti-1009: limita payload grande
             MAX_AUDIO_B64 = 900_000  # ~0.9MB para evitar frames >1MB
-            if len(audio_b64) > MAX_AUDIO_B64:
-                _safe_print("[TTS] audio demasiado grande -> fallback say (sin audio_b64)")
-                avatar.send_say(speech, emo)
-            else:
-                avatar.send_raw({
-                    "type": "tts",
-                    "emotion": emo,
-                    "audio_b64": audio_b64,
-                    "visemes": visemes
-                })
-                _safe_print("[WS OUT] tts queued, bytes=" + str(len(audio_b64)))
-                _safe_print("[WS STATUS] " + str(avatar.status()))
+            tts_session_id["value"] += 1
+            session_token = tts_session_id["value"]
+
+            def synthesize_chunk(text: str):
+                return synthesize_tts_with_visemes(
+                    text,
+                    key=AZURE_KEY,
+                    region=AZURE_REGION,
+                    voice=AZURE_VOICE
+                )
+
+            send_tts_chunks(
+                tts_text,
+                emotion=emo,
+                synthesize_fn=synthesize_chunk,
+                send_fn=avatar.send_raw,
+                session_getter=get_tts_session_id,
+                session_token=session_token,
+                max_audio_b64=MAX_AUDIO_B64,
+                log_fn=_safe_print,
+            )
 
         except Exception as e:
             _safe_print("[AZURE] FAIL -> fallback say: " + repr(e))
@@ -411,7 +406,20 @@ server_handles = start_local_servers()
 
 avatar = AvatarWSClient("ws://127.0.0.1:8765")
 avatar.start()
-state.set_state_change_handler(avatar.send_json)
+tts_session_id = {"value": 0}
+
+def get_tts_session_id() -> int:
+    return tts_session_id["value"]
+
+def cancel_tts_session() -> None:
+    tts_session_id["value"] += 1
+
+def on_state_change(payload: dict) -> None:
+    avatar.send_json(payload)
+    if payload.get("conversation_state") == "LISTENING":
+        cancel_tts_session()
+
+state.set_state_change_handler(on_state_change)
 control_server = ControlServer(state)
 control_server.start()
 whisper_listener = AzureSpeechListener(
