@@ -434,7 +434,8 @@ try:
 
     threading.Thread(target=stdin_worker, daemon=True).start()
 
-    wake_word = "oye jarvis"
+    wake_words = ("oye jarvis", "hey jarvis")
+    wake_ttl_seconds = float(os.getenv("WAKE_TTL_SECONDS", "30"))
     armed_until = {"value": 0.0}
 
     # >>>>>> FIX: ventana real de wake (6s) + cancelación de timer anterior <<<<<<
