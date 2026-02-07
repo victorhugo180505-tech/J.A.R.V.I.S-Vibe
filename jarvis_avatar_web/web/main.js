@@ -64,6 +64,15 @@ const gestureState = {
   lowerArm: null,
   hand: null,
 };
+const eyeLookState = {
+  enabled: true,
+  marker: null,
+  lastLogAt: 0,
+  leftEyeBase: null,
+  rightEyeBase: null,
+  headBase: null,
+  neckBase: null,
+};
 
 scene.add(new THREE.AmbientLight(0xffffff, 0.8));
 const dir = new THREE.DirectionalLight(0xffffff, 1.4);
@@ -224,6 +233,115 @@ function applyBaseCloseup() {
       controls.object.position.copy(camera.position);
     }
     controls.update?.();
+  }
+}
+
+function ensureEyeLookMarker() {
+  if (!eyeLookState.marker) {
+    const geo = new THREE.SphereGeometry(0.02, 16, 16);
+    const mat = new THREE.MeshBasicMaterial({ color: 0x00ff7f });
+    eyeLookState.marker = new THREE.Mesh(geo, mat);
+    eyeLookState.marker.visible = false;
+    scene.add(eyeLookState.marker);
+  }
+}
+
+function captureEyeLookBasePose(humanoid) {
+  if (!humanoid) return;
+  const leftEye = getHumanoidBone(humanoid, "leftEye");
+  const rightEye = getHumanoidBone(humanoid, "rightEye");
+  const head = getHumanoidBone(humanoid, "head");
+  const neck = getHumanoidBone(humanoid, "neck");
+
+  if (leftEye && !eyeLookState.leftEyeBase) eyeLookState.leftEyeBase = leftEye.quaternion.clone();
+  if (rightEye && !eyeLookState.rightEyeBase) eyeLookState.rightEyeBase = rightEye.quaternion.clone();
+  if (head && !eyeLookState.headBase) eyeLookState.headBase = head.quaternion.clone();
+  if (neck && !eyeLookState.neckBase) eyeLookState.neckBase = neck.quaternion.clone();
+}
+
+function getLookTargetPosition() {
+  const target = new THREE.Vector3();
+  if (vrm?.lookAt?.target) {
+    return vrm.lookAt.target.getWorldPosition(target);
+  }
+  return lookTarget.getWorldPosition(target);
+}
+
+function updateEyeLookController(dt) {
+  if (!eyeLookState.enabled) return;
+  if (!vrm) return;
+
+  const humanoid = vrm.humanoid;
+  if (!humanoid) return;
+  captureEyeLookBasePose(humanoid);
+
+  const targetPos = getLookTargetPosition();
+  const head = getHumanoidBone(humanoid, "head");
+  const neck = getHumanoidBone(humanoid, "neck");
+  const leftEye = getHumanoidBone(humanoid, "leftEye");
+  const rightEye = getHumanoidBone(humanoid, "rightEye");
+
+  if (!head && !leftEye && !rightEye && !vrm.lookAt) return;
+
+  const headPos = head?.getWorldPosition(new THREE.Vector3()) ?? cameraTarget.clone();
+  const dir = targetPos.clone().sub(headPos).normalize();
+  const yaw = Math.atan2(dir.x, dir.z);
+  const pitch = Math.asin(clamp(dir.y, -1, 1));
+
+  const eyeYaw = clamp(yaw, THREE.MathUtils.degToRad(-12), THREE.MathUtils.degToRad(12));
+  const eyePitch = clamp(pitch, THREE.MathUtils.degToRad(-12), THREE.MathUtils.degToRad(12));
+  const headYaw = clamp(yaw, THREE.MathUtils.degToRad(-25), THREE.MathUtils.degToRad(25));
+  const headPitch = clamp(pitch, THREE.MathUtils.degToRad(-25), THREE.MathUtils.degToRad(25));
+
+  if (vrm.lookAt) {
+    vrm.lookAt.target = lookTarget;
+    if (vrm.lookAt.rangeMapHorizontal?.outputScale != null) {
+      vrm.lookAt.rangeMapHorizontal.outputScale = 1.0;
+    }
+    if (vrm.lookAt.rangeMapVertical?.outputScale != null) {
+      vrm.lookAt.rangeMapVertical.outputScale = 0.8;
+    }
+    if (vrm.lookAt.rangeMapVerticalDown?.outputScale != null) {
+      vrm.lookAt.rangeMapVerticalDown.outputScale = 0.8;
+    }
+  } else {
+    const alpha = Math.min(1, dt * 8);
+    if (leftEye && eyeLookState.leftEyeBase) {
+      const eyeTarget = eyeLookState.leftEyeBase.clone()
+        .multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(eyePitch, eyeYaw, 0)));
+      leftEye.quaternion.slerp(eyeTarget, alpha);
+    }
+    if (rightEye && eyeLookState.rightEyeBase) {
+      const eyeTarget = eyeLookState.rightEyeBase.clone()
+        .multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(eyePitch, eyeYaw, 0)));
+      rightEye.quaternion.slerp(eyeTarget, alpha);
+    }
+  }
+
+  const headAlpha = Math.min(1, dt * 6);
+  if (head && eyeLookState.headBase) {
+    const headTarget = eyeLookState.headBase.clone()
+      .multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(headPitch, headYaw, 0)));
+    head.quaternion.slerp(headTarget, headAlpha);
+  }
+  if (neck && eyeLookState.neckBase) {
+    const neckTarget = eyeLookState.neckBase.clone()
+      .multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(headPitch * 0.6, headYaw * 0.6, 0)));
+    neck.quaternion.slerp(neckTarget, headAlpha);
+  }
+
+  const now = performance.now();
+  if (now - eyeLookState.lastLogAt > 1000) {
+    console.log("[EYE] yawDeg=%s pitchDeg=%s pitchDownApplied=%s", 
+      THREE.MathUtils.radToDeg(yaw).toFixed(2),
+      THREE.MathUtils.radToDeg(pitch).toFixed(2),
+      pitch < 0
+    );
+    eyeLookState.lastLogAt = now;
+  }
+
+  if (eyeLookState.marker) {
+    eyeLookState.marker.position.copy(targetPos);
   }
 }
 
@@ -897,6 +1015,9 @@ loader.load(
     vrm.scene.position.set(0, 0, 0);
 
     if (vrm.lookAt) vrm.lookAt.target = lookTarget;
+    if (vrm.lookAt?.rangeMapVerticalDown?.outputScale != null) {
+      vrm.lookAt.rangeMapVerticalDown.outputScale = 0.8;
+    }
 
     applyRelaxPose(vrm);
     captureGestureBasePose(vrm.humanoid);
@@ -1370,6 +1491,10 @@ window.addEventListener("keydown", (event) => {
       fov: camera.fov,
     });
   }
+  if (key === "l") {
+    ensureEyeLookMarker();
+    eyeLookState.marker.visible = !eyeLookState.marker.visible;
+  }
   if (key === "p") {
     gestureState.enabled = !gestureState.enabled;
     console.log(`[GESTURE] thinking ${gestureState.enabled ? "ON" : "OFF"}`);
@@ -1429,6 +1554,7 @@ function animate() {
       1;
     applyBreathing(vrm, dt, breatheScale);
     applyThinkingGesture(dt);
+    updateEyeLookController(dt);
     applyAutoBlink(vrm, dt);
     applyHeadTracking(vrm, dt);
 
