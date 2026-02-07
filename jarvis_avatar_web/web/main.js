@@ -72,6 +72,9 @@ const eyeLookState = {
   rightEyeBase: null,
   headBase: null,
   neckBase: null,
+  forceUntil: 0,
+  forceDir: 0,
+  pitchAxisIndex: 0,
 };
 
 scene.add(new THREE.AmbientLight(0xffffff, 0.8));
@@ -259,6 +262,36 @@ function captureEyeLookBasePose(humanoid) {
   if (neck && !eyeLookState.neckBase) eyeLookState.neckBase = neck.quaternion.clone();
 }
 
+function getEyePitchAxis() {
+  switch (eyeLookState.pitchAxisIndex) {
+    case 1:
+      return new THREE.Vector3(-1, 0, 0);
+    case 2:
+      return new THREE.Vector3(0, 0, 1);
+    case 3:
+      return new THREE.Vector3(0, 0, -1);
+    case 0:
+    default:
+      return new THREE.Vector3(1, 0, 0);
+  }
+}
+
+function getExpressionValue(em, key) {
+  if (!em?.getValue) return 0;
+  try {
+    return em.getValue(key);
+  } catch {
+    return 0;
+  }
+}
+
+function setExpressionValue(em, key, value) {
+  if (!em?.setValue) return;
+  try {
+    em.setValue(key, value);
+  } catch {}
+}
+
 function getLookTargetPosition() {
   const target = new THREE.Vector3();
   if (vrm?.lookAt?.target) {
@@ -274,6 +307,9 @@ function updateEyeLookController(dt) {
   const humanoid = vrm.humanoid;
   if (!humanoid) return;
   captureEyeLookBasePose(humanoid);
+
+  const now = performance.now();
+  const forceActive = now < eyeLookState.forceUntil;
 
   const targetPos = getLookTargetPosition();
   const head = getHumanoidBone(humanoid, "head");
@@ -293,7 +329,26 @@ function updateEyeLookController(dt) {
   const headYaw = clamp(yaw, THREE.MathUtils.degToRad(-25), THREE.MathUtils.degToRad(25));
   const headPitch = clamp(pitch, THREE.MathUtils.degToRad(-25), THREE.MathUtils.degToRad(25));
 
-  if (vrm.lookAt) {
+  const em = vrm.expressionManager;
+  const applierType = vrm.lookAt?.applier?.constructor?.name || "";
+  const hasLookDown = Boolean(em && expressionKeys.includes("lookDown"));
+  const hasLookUp = Boolean(em && expressionKeys.includes("lookUp"));
+
+  if (forceActive && applierType.includes("Expression") && hasLookDown) {
+    const weight = clamp(Math.abs(eyeLookState.forceDir), 0, 1);
+    const downWeight = eyeLookState.forceDir < 0 ? weight : 0;
+    const upWeight = eyeLookState.forceDir > 0 ? weight : 0;
+    const beforeDown = getExpressionValue(em, "lookDown");
+    const beforeUp = getExpressionValue(em, "lookUp");
+    setExpressionValue(em, "lookDown", downWeight);
+    setExpressionValue(em, "lookUp", upWeight);
+    console.log("[EYE] force expression before/after", {
+      beforeDown,
+      beforeUp,
+      afterDown: getExpressionValue(em, "lookDown"),
+      afterUp: getExpressionValue(em, "lookUp"),
+    });
+  } else if (vrm.lookAt) {
     vrm.lookAt.target = lookTarget;
     if (vrm.lookAt.rangeMapHorizontal?.outputScale != null) {
       vrm.lookAt.rangeMapHorizontal.outputScale = 1.0;
@@ -305,32 +360,61 @@ function updateEyeLookController(dt) {
       vrm.lookAt.rangeMapVerticalDown.outputScale = 0.8;
     }
   } else {
-    const alpha = Math.min(1, dt * 8);
-    if (leftEye && eyeLookState.leftEyeBase) {
-      const eyeTarget = eyeLookState.leftEyeBase.clone()
-        .multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(eyePitch, eyeYaw, 0)));
-      leftEye.quaternion.slerp(eyeTarget, alpha);
+    if (!hasLookDown) {
+      console.log("[EYES] No lookDown expression available; falling back to head-only");
     }
-    if (rightEye && eyeLookState.rightEyeBase) {
-      const eyeTarget = eyeLookState.rightEyeBase.clone()
-        .multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(eyePitch, eyeYaw, 0)));
-      rightEye.quaternion.slerp(eyeTarget, alpha);
+  }
+
+  if (leftEye || rightEye) {
+    const alpha = Math.min(1, dt * 8);
+    const pitchAxis = getEyePitchAxis();
+    const yawQuat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), eyeYaw);
+    const pitchQuat = new THREE.Quaternion().setFromAxisAngle(pitchAxis, eyePitch);
+    const eyeQuat = yawQuat.clone().multiply(pitchQuat);
+
+    if (forceActive && !(applierType.includes("Expression") && hasLookDown)) {
+      const forcePitch = THREE.MathUtils.degToRad(20) * eyeLookState.forceDir;
+      const forceQuat = new THREE.Quaternion().setFromAxisAngle(pitchAxis, forcePitch);
+      if (leftEye && eyeLookState.leftEyeBase) {
+        const before = leftEye.quaternion.clone();
+        const eyeTarget = eyeLookState.leftEyeBase.clone().multiply(forceQuat);
+        leftEye.quaternion.slerp(eyeTarget, 1);
+        console.log("[EYE] force bone before/after", { before, after: leftEye.quaternion.clone() });
+      }
+      if (rightEye && eyeLookState.rightEyeBase) {
+        const before = rightEye.quaternion.clone();
+        const eyeTarget = eyeLookState.rightEyeBase.clone().multiply(forceQuat);
+        rightEye.quaternion.slerp(eyeTarget, 1);
+        console.log("[EYE] force bone before/after", { before, after: rightEye.quaternion.clone() });
+      }
+    } else {
+      if (leftEye && eyeLookState.leftEyeBase) {
+        const eyeTarget = eyeLookState.leftEyeBase.clone().multiply(eyeQuat);
+        leftEye.quaternion.slerp(eyeTarget, alpha);
+      }
+      if (rightEye && eyeLookState.rightEyeBase) {
+        const eyeTarget = eyeLookState.rightEyeBase.clone().multiply(eyeQuat);
+        rightEye.quaternion.slerp(eyeTarget, alpha);
+      }
     }
   }
 
   const headAlpha = Math.min(1, dt * 6);
   if (head && eyeLookState.headBase) {
-    const headTarget = eyeLookState.headBase.clone()
-      .multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(headPitch, headYaw, 0)));
+    const pitchAxis = getEyePitchAxis();
+    const yawQuat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), headYaw);
+    const pitchQuat = new THREE.Quaternion().setFromAxisAngle(pitchAxis, headPitch);
+    const headTarget = eyeLookState.headBase.clone().multiply(yawQuat).multiply(pitchQuat);
     head.quaternion.slerp(headTarget, headAlpha);
   }
   if (neck && eyeLookState.neckBase) {
-    const neckTarget = eyeLookState.neckBase.clone()
-      .multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(headPitch * 0.6, headYaw * 0.6, 0)));
+    const pitchAxis = getEyePitchAxis();
+    const yawQuat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), headYaw * 0.6);
+    const pitchQuat = new THREE.Quaternion().setFromAxisAngle(pitchAxis, headPitch * 0.6);
+    const neckTarget = eyeLookState.neckBase.clone().multiply(yawQuat).multiply(pitchQuat);
     neck.quaternion.slerp(neckTarget, headAlpha);
   }
 
-  const now = performance.now();
   if (now - eyeLookState.lastLogAt > 1000) {
     console.log("[EYE] yawDeg=%s pitchDeg=%s pitchDownApplied=%s", 
       THREE.MathUtils.radToDeg(yaw).toFixed(2),
@@ -1026,6 +1110,22 @@ loader.load(
 
     console.log("✅ VRM cargado OK");
     console.log("🎭 Expresiones detectadas:", expressionKeys);
+    const leftEye = getHumanoidBone(vrm.humanoid, "leftEye");
+    const rightEye = getHumanoidBone(vrm.humanoid, "rightEye");
+    console.log("[EYE] lookAt?", Boolean(vrm.lookAt));
+    console.log("[EYE] applier", vrm.lookAt?.applier?.constructor?.name || "none");
+    console.log("[EYE] eye bones", { left: Boolean(leftEye), right: Boolean(rightEye) });
+    const em = vrm.expressionManager;
+    if (em) {
+      const keys = ["lookDown", "lookUp", "lookLeft", "lookRight"].filter((key) => expressionKeys.includes(key));
+      console.log("[EYE] expressions", keys);
+    } else {
+      console.log("[EYE] expressionManager missing");
+    }
+    window.__vrm = vrm;
+    window.__camera = camera;
+    window.__controls = typeof controls !== "undefined" ? controls : null;
+    console.log("[VRM] debug handles attached");
 
     applyBaseCloseup();
     applyMood();
@@ -1491,6 +1591,18 @@ window.addEventListener("keydown", (event) => {
       fov: camera.fov,
     });
   }
+  if (key === "y") {
+    eyeLookState.forceUntil = performance.now() + 2000;
+    eyeLookState.forceDir = -1;
+  }
+  if (key === "u") {
+    eyeLookState.forceUntil = performance.now() + 2000;
+    eyeLookState.forceDir = 1;
+  }
+  if (key === "i") {
+    eyeLookState.pitchAxisIndex = (eyeLookState.pitchAxisIndex + 1) % 4;
+    console.log("[EYE] pitch axis", eyeLookState.pitchAxisIndex);
+  }
   if (key === "l") {
     ensureEyeLookMarker();
     eyeLookState.marker.visible = !eyeLookState.marker.visible;
@@ -1554,7 +1666,6 @@ function animate() {
       1;
     applyBreathing(vrm, dt, breatheScale);
     applyThinkingGesture(dt);
-    updateEyeLookController(dt);
     applyAutoBlink(vrm, dt);
     applyHeadTracking(vrm, dt);
 
@@ -1582,7 +1693,20 @@ function animate() {
       }
     }
 
+    if (performance.now() < eyeLookState.forceUntil) {
+      console.log("[EYE] pre update force", {
+        lookDown: getExpressionValue(vrm.expressionManager, "lookDown"),
+        lookUp: getExpressionValue(vrm.expressionManager, "lookUp"),
+      });
+    }
     vrm.update(dt);
+    if (performance.now() < eyeLookState.forceUntil) {
+      console.log("[EYE] post update force", {
+        lookDown: getExpressionValue(vrm.expressionManager, "lookDown"),
+        lookUp: getExpressionValue(vrm.expressionManager, "lookUp"),
+      });
+    }
+    updateEyeLookController(dt);
   }
 
   renderer.render(scene, camera);
