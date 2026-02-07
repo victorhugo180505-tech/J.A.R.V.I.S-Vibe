@@ -1098,7 +1098,9 @@ function updateLookTarget() {
   const hit = new THREE.Vector3();
   raycaster.ray.intersectPlane(plane, hit);
 
-  hit.y = clamp(hit.y, 1.25, 1.75);
+  const minLookY = cameraTarget.y - 0.6;
+  const maxLookY = cameraTarget.y + 0.3;
+  hit.y = clamp(hit.y, minLookY, maxLookY);
   hit.add(gazeOffset);
 
   lookTarget.position.copy(hit);
