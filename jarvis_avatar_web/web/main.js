@@ -138,6 +138,21 @@ let burstT = 0;
 let presenceState = "IDLE";
 let presenceTarget = "IDLE";
 let presenceBlend = 0;
+const presencePose = {
+  offset: new THREE.Vector3(0, 0, 0),
+  head: new THREE.Euler(),
+  neck: new THREE.Euler(),
+  chest: new THREE.Euler(),
+  spine: new THREE.Euler(),
+};
+const presencePoseTarget = {
+  offset: new THREE.Vector3(0, 0, 0),
+  head: new THREE.Euler(),
+  neck: new THREE.Euler(),
+  chest: new THREE.Euler(),
+  spine: new THREE.Euler(),
+};
+let presenceLastState = "IDLE";
 
 // Expresiones disponibles (auto)
 let expressionKeys = [];
@@ -270,7 +285,100 @@ function updatePresence(dt) {
   if (presenceState === presenceTarget) return;
   presenceBlend = Math.min(1, presenceBlend + dt * 2.5);
   if (presenceBlend >= 1) {
+    presenceLastState = presenceState;
     presenceState = presenceTarget;
+  }
+}
+
+function setPoseTarget(offset, head, neck, chest, spine) {
+  presencePoseTarget.offset.copy(offset);
+  presencePoseTarget.head.copy(head);
+  presencePoseTarget.neck.copy(neck);
+  presencePoseTarget.chest.copy(chest);
+  presencePoseTarget.spine.copy(spine);
+}
+
+function updatePresencePoseTargets(time) {
+  const idleSway = Math.sin(time * 0.6) * 0.003;
+  const idleBreath = Math.sin(time * 0.8) * 0.004;
+  const listenLean = 0.03;
+  const thinkTilt = 0.08;
+
+  if (presenceTarget === "LISTENING") {
+    setPoseTarget(
+      new THREE.Vector3(0, 0.01, 0.01),
+      new THREE.Euler(-0.03, 0.02, 0),
+      new THREE.Euler(-0.015, 0.01, 0),
+      new THREE.Euler(-0.01, 0, 0),
+      new THREE.Euler(-0.005, 0, 0),
+    );
+  } else if (presenceTarget === "THINKING") {
+    setPoseTarget(
+      new THREE.Vector3(0, 0.005, 0),
+      new THREE.Euler(-0.02, thinkTilt, 0),
+      new THREE.Euler(-0.01, 0.03, 0),
+      new THREE.Euler(-0.005, 0.01, 0),
+      new THREE.Euler(0, 0, 0),
+    );
+  } else if (presenceTarget === "SPEAKING") {
+    const bob = speaking ? Math.sin(time * 6) * 0.01 : 0;
+    setPoseTarget(
+      new THREE.Vector3(0, 0.005 + bob, 0),
+      new THREE.Euler(-0.02 + bob, 0, 0),
+      new THREE.Euler(-0.01 + bob * 0.5, 0, 0),
+      new THREE.Euler(-0.005, 0, 0),
+      new THREE.Euler(0, 0, 0),
+    );
+  } else {
+    setPoseTarget(
+      new THREE.Vector3(0, idleBreath, 0),
+      new THREE.Euler(idleSway, 0, 0),
+      new THREE.Euler(idleSway * 0.5, 0, 0),
+      new THREE.Euler(idleSway * 0.3, 0, 0),
+      new THREE.Euler(0, 0, 0),
+    );
+  }
+}
+
+function applyPresencePose(dt, time) {
+  if (!vrm) return;
+  updatePresencePoseTargets(time);
+  const t = Math.min(1, dt * 4);
+  presencePose.offset.lerp(presencePoseTarget.offset, t);
+  presencePose.head.x = THREE.MathUtils.lerp(presencePose.head.x, presencePoseTarget.head.x, t);
+  presencePose.head.y = THREE.MathUtils.lerp(presencePose.head.y, presencePoseTarget.head.y, t);
+  presencePose.head.z = THREE.MathUtils.lerp(presencePose.head.z, presencePoseTarget.head.z, t);
+  presencePose.neck.x = THREE.MathUtils.lerp(presencePose.neck.x, presencePoseTarget.neck.x, t);
+  presencePose.neck.y = THREE.MathUtils.lerp(presencePose.neck.y, presencePoseTarget.neck.y, t);
+  presencePose.neck.z = THREE.MathUtils.lerp(presencePose.neck.z, presencePoseTarget.neck.z, t);
+  presencePose.chest.x = THREE.MathUtils.lerp(presencePose.chest.x, presencePoseTarget.chest.x, t);
+  presencePose.chest.y = THREE.MathUtils.lerp(presencePose.chest.y, presencePoseTarget.chest.y, t);
+  presencePose.chest.z = THREE.MathUtils.lerp(presencePose.chest.z, presencePoseTarget.chest.z, t);
+  presencePose.spine.x = THREE.MathUtils.lerp(presencePose.spine.x, presencePoseTarget.spine.x, t);
+  presencePose.spine.y = THREE.MathUtils.lerp(presencePose.spine.y, presencePoseTarget.spine.y, t);
+  presencePose.spine.z = THREE.MathUtils.lerp(presencePose.spine.z, presencePoseTarget.spine.z, t);
+
+  const humanoid = vrm.humanoid;
+  if (!humanoid) return;
+  const hips = humanoid.getBoneNode("hips");
+  const spine = humanoid.getBoneNode("spine");
+  const chest = humanoid.getBoneNode("chest") || humanoid.getBoneNode("upperChest");
+  const neck = humanoid.getBoneNode("neck");
+  const head = humanoid.getBoneNode("head");
+
+  if (hips) {
+    hips.position.y = presencePose.offset.y;
+    hips.position.z = presencePose.offset.z;
+  }
+  if (spine) spine.rotation.x = presencePose.spine.x;
+  if (chest) chest.rotation.x = presencePose.chest.x;
+  if (neck) {
+    neck.rotation.x = presencePose.neck.x;
+    neck.rotation.y = presencePose.neck.y;
+  }
+  if (head) {
+    head.rotation.x = presencePose.head.x;
+    head.rotation.y = presencePose.head.y;
   }
 }
 
@@ -948,6 +1056,7 @@ function animate() {
   updateLookTarget();
   updateBurst(dt);
   updatePresence(dt);
+  applyPresencePose(dt, clock.elapsedTime);
 
   if (vrm) {
     applyBreathing(vrm, dt);
