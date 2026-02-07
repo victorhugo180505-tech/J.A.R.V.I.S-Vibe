@@ -72,6 +72,7 @@ def send_tts_chunks(
     text: str,
     *,
     emotion: str,
+    session_id: str,
     synthesize_fn: Callable[[str], tuple[str, list]],
     send_fn: Callable[[dict], None],
     subtitle_fn: Callable[[str], None] | None = None,
@@ -137,13 +138,19 @@ def send_tts_chunks(
         if subtitle_fn:
             subtitle_fn(chunk)
 
+        seq = sent + 1
+        sent += 1
+        is_last = (len(pending) == 0)
         send_fn({
             "type": "tts",
             "emotion": emotion,
+            "tts_session_id": session_id,
+            "seq": sent,
+            "is_last": is_last,
+            "subtitle": chunk,
             "audio_b64": audio_b64,
             "visemes": visemes,
         })
-        sent += 1
 
         if total_attempts > 1000:
             logger("[TTS] abortando: demasiados splits")

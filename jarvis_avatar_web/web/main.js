@@ -618,6 +618,7 @@ async function playAzureTTS(audioB64, visemes = []) {
     clearVisemeTimers();
     setMouthTargetsOnly(null, 0.0);
     handleAvatarSpeechEnd();
+    playNextFromQueue();
   };
 
   try {
@@ -731,6 +732,34 @@ function enqueueSubtitle(role, text) {
   }
 }
 
+// -----------------------------
+// TTS queue (chunked playback)
+// -----------------------------
+const ttsQueue = [];
+let currentTtsSession = null;
+
+function clearTtsQueue() {
+  ttsQueue.length = 0;
+}
+
+function stopCurrentAudio() {
+  if (currentSrc) {
+    try { currentSrc.stop(); } catch {}
+    currentSrc = null;
+  }
+  speaking = false;
+  clearVisemeTimers();
+  setMouthTargetsOnly(null, 0.0);
+}
+
+function playNextFromQueue() {
+  if (speaking || ttsQueue.length === 0) return;
+  const next = ttsQueue.shift();
+  if (!next) return;
+  if (next.subtitle) enqueueSubtitle("jarvis", next.subtitle);
+  playAzureTTS(next.audio_b64, Array.isArray(next.visemes) ? next.visemes : []);
+}
+
 function connectWS() {
   ws = new WebSocket(WS_URL);
 
@@ -750,6 +779,10 @@ function connectWS() {
       if (msg.mouse && typeof msg.mouse.x === "number" && typeof msg.mouse.y === "number") {
         mouseNDC.x = msg.mouse.x;
         mouseNDC.y = msg.mouse.y;
+      }
+      if (msg.conversation_state === "LISTENING") {
+        clearTtsQueue();
+        stopCurrentAudio();
       }
       return;
     }
@@ -800,9 +833,22 @@ function connectWS() {
         else setMood(emo);
       }
 
+      if (typeof msg.tts_session_id === "string") {
+        if (currentTtsSession !== msg.tts_session_id) {
+          currentTtsSession = msg.tts_session_id;
+          clearTtsQueue();
+          stopCurrentAudio();
+        }
+      }
+
       if (typeof msg.audio_b64 === "string") {
+        ttsQueue.push({
+          audio_b64: msg.audio_b64,
+          visemes: msg.visemes,
+          subtitle: typeof msg.subtitle === "string" ? msg.subtitle : "",
+        });
         handleAvatarSpeechStart();
-        playAzureTTS(msg.audio_b64, Array.isArray(msg.visemes) ? msg.visemes : []);
+        if (!speaking) playNextFromQueue();
       }
       return;
     }

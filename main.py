@@ -352,6 +352,7 @@ def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
             MAX_AUDIO_B64 = 900_000  # ~0.9MB para evitar frames >1MB
             tts_session_id["value"] += 1
             session_token = tts_session_id["value"]
+            tts_session_key = f"{int(time.time()*1000)}-{session_token}"
 
             def synthesize_chunk(text: str):
                 return synthesize_tts_with_visemes(
@@ -364,9 +365,10 @@ def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
             send_tts_chunks(
                 tts_text,
                 emotion=emo,
+                session_id=tts_session_key,
                 synthesize_fn=synthesize_chunk,
                 send_fn=avatar.send_raw,
-                subtitle_fn=lambda chunk: emit_subtitle(state, avatar.send_json, "jarvis", chunk),
+                subtitle_fn=None,
                 session_getter=get_tts_session_id,
                 session_token=session_token,
                 max_audio_b64=MAX_AUDIO_B64,
