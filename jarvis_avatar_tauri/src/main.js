@@ -23,6 +23,7 @@ renderer.setPixelRatio(window.devicePixelRatio);
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x111111);
 
+const ENABLE_EXPERIMENTAL_EYES = false;
 const BASE_CLOSEUP = {
   position: new THREE.Vector3(0, 1.45, 0.95),
   target: new THREE.Vector3(0, 1.45, 0),
@@ -66,7 +67,7 @@ const gestureState = {
   hand: null,
 };
 const eyeLookState = {
-  enabled: true,
+  enabled: ENABLE_EXPERIMENTAL_EYES,
   marker: null,
   lastLogAt: 0,
   leftEyeBase: null,
@@ -1099,7 +1100,7 @@ loader.load(
     vrm.scene.position.set(0, 0, 0);
 
     if (vrm.lookAt) vrm.lookAt.target = lookTarget;
-    if (vrm.lookAt?.rangeMapVerticalDown?.outputScale != null) {
+    if (ENABLE_EXPERIMENTAL_EYES && vrm.lookAt?.rangeMapVerticalDown?.outputScale != null) {
       vrm.lookAt.rangeMapVerticalDown.outputScale = 0.8;
     }
 
@@ -1110,22 +1111,24 @@ loader.load(
 
     console.log("✅ VRM cargado OK");
     console.log("🎭 Expresiones detectadas:", expressionKeys);
-    const leftEye = getHumanoidBone(vrm.humanoid, "leftEye");
-    const rightEye = getHumanoidBone(vrm.humanoid, "rightEye");
-    console.log("[EYE] lookAt?", Boolean(vrm.lookAt));
-    console.log("[EYE] applier", vrm.lookAt?.applier?.constructor?.name || "none");
-    console.log("[EYE] eye bones", { left: Boolean(leftEye), right: Boolean(rightEye) });
-    const em = vrm.expressionManager;
-    if (em) {
-      const keys = ["lookDown", "lookUp", "lookLeft", "lookRight"].filter((key) => expressionKeys.includes(key));
-      console.log("[EYE] expressions", keys);
-    } else {
-      console.log("[EYE] expressionManager missing");
+    if (ENABLE_EXPERIMENTAL_EYES) {
+      const leftEye = getHumanoidBone(vrm.humanoid, "leftEye");
+      const rightEye = getHumanoidBone(vrm.humanoid, "rightEye");
+      console.log("[EYE] lookAt?", Boolean(vrm.lookAt));
+      console.log("[EYE] applier", vrm.lookAt?.applier?.constructor?.name || "none");
+      console.log("[EYE] eye bones", { left: Boolean(leftEye), right: Boolean(rightEye) });
+      const em = vrm.expressionManager;
+      if (em) {
+        const keys = ["lookDown", "lookUp", "lookLeft", "lookRight"].filter((key) => expressionKeys.includes(key));
+        console.log("[EYE] expressions", keys);
+      } else {
+        console.log("[EYE] expressionManager missing");
+      }
+      window.__vrm = vrm;
+      window.__camera = camera;
+      window.__controls = typeof controls !== "undefined" ? controls : null;
+      console.log("[VRM] debug handles attached");
     }
-    window.__vrm = vrm;
-    window.__camera = camera;
-    window.__controls = typeof controls !== "undefined" ? controls : null;
-    console.log("[VRM] debug handles attached");
 
     applyBaseCloseup();
     applyMood();
@@ -1585,21 +1588,23 @@ window.addEventListener("keydown", (event) => {
       fov: camera.fov,
     });
   }
-  if (key === "y") {
-    eyeLookState.forceUntil = performance.now() + 2000;
-    eyeLookState.forceDir = -1;
-  }
-  if (key === "u") {
-    eyeLookState.forceUntil = performance.now() + 2000;
-    eyeLookState.forceDir = 1;
-  }
-  if (key === "i") {
-    eyeLookState.pitchAxisIndex = (eyeLookState.pitchAxisIndex + 1) % 4;
-    console.log("[EYE] pitch axis", eyeLookState.pitchAxisIndex);
-  }
-  if (key === "l") {
-    ensureEyeLookMarker();
-    eyeLookState.marker.visible = !eyeLookState.marker.visible;
+  if (ENABLE_EXPERIMENTAL_EYES) {
+    if (key === "y") {
+      eyeLookState.forceUntil = performance.now() + 2000;
+      eyeLookState.forceDir = -1;
+    }
+    if (key === "u") {
+      eyeLookState.forceUntil = performance.now() + 2000;
+      eyeLookState.forceDir = 1;
+    }
+    if (key === "i") {
+      eyeLookState.pitchAxisIndex = (eyeLookState.pitchAxisIndex + 1) % 4;
+      console.log("[EYE] pitch axis", eyeLookState.pitchAxisIndex);
+    }
+    if (key === "l") {
+      ensureEyeLookMarker();
+      eyeLookState.marker.visible = !eyeLookState.marker.visible;
+    }
   }
   if (key === "p") {
     gestureState.enabled = !gestureState.enabled;
@@ -1687,20 +1692,22 @@ function animate() {
       }
     }
 
-    if (performance.now() < eyeLookState.forceUntil) {
+    if (ENABLE_EXPERIMENTAL_EYES && performance.now() < eyeLookState.forceUntil) {
       console.log("[EYE] pre update force", {
         lookDown: getExpressionValue(vrm.expressionManager, "lookDown"),
         lookUp: getExpressionValue(vrm.expressionManager, "lookUp"),
       });
     }
     vrm.update(dt);
-    if (performance.now() < eyeLookState.forceUntil) {
+    if (ENABLE_EXPERIMENTAL_EYES && performance.now() < eyeLookState.forceUntil) {
       console.log("[EYE] post update force", {
         lookDown: getExpressionValue(vrm.expressionManager, "lookDown"),
         lookUp: getExpressionValue(vrm.expressionManager, "lookUp"),
       });
     }
-    updateEyeLookController(dt);
+    if (ENABLE_EXPERIMENTAL_EYES) {
+      updateEyeLookController(dt);
+    }
   }
 
   renderer.render(scene, camera);
