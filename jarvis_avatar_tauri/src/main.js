@@ -30,18 +30,21 @@ let cameraDynamicEnabled = true;
 let cameraPresenceState = "IDLE";
 let cameraPresenceTarget = "IDLE";
 let cameraPresenceBlend = 0;
-const cameraBasePose = {
-  position: camera.position.clone(),
-  target: cameraTarget.clone(),
+const cameraRigBase = {
+  distance: camera.position.distanceTo(cameraTarget),
+  height: camera.position.y - cameraTarget.y,
+  back: new THREE.Vector3().subVectors(camera.position, cameraTarget).normalize(),
   fov: camera.fov,
 };
-const cameraOffset = {
-  position: new THREE.Vector3(0, 0, 0),
-  target: new THREE.Vector3(0, 0, 0),
-  fov: 0,
-  yaw: 0,
-  pitch: 0,
+const cameraRigConfig = {
+  targetOffsetY: 0.06,
+  maxDeltaY: 0.35,
 };
+const cameraDebug = {
+  enabled: false,
+  marker: null,
+};
+let cameraPresenceLastLog = null;
 
 scene.add(new THREE.AmbientLight(0xffffff, 0.8));
 const dir = new THREE.DirectionalLight(0xffffff, 1.4);
@@ -180,67 +183,104 @@ const EMO_CHANNELS = ["angry", "relaxed", "happy", "sad", "Surprised"];
 // Helpers
 // -----------------------------
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
-const degToRad = (deg) => (deg * Math.PI) / 180;
+const formatVec = (v) => `${v.x.toFixed(3)},${v.y.toFixed(3)},${v.z.toFixed(3)}`;
+
+function ensureCameraDebugMarker() {
+  if (!cameraDebug.enabled || cameraDebug.marker) return;
+  const geo = new THREE.SphereGeometry(0.015, 16, 16);
+  const mat = new THREE.MeshBasicMaterial({ color: 0xff00ff });
+  cameraDebug.marker = new THREE.Mesh(geo, mat);
+  scene.add(cameraDebug.marker);
+}
+
+function getHeadAnchor() {
+  const head =
+    vrm?.humanoid?.getNormalizedBoneNode("head") ||
+    vrm?.humanoid?.getBoneNode("head");
+  if (!head) return cameraTarget.clone();
+  return head.getWorldPosition(new THREE.Vector3());
+}
 
 function updateCameraRig(dt, time) {
   if (!cameraDynamicEnabled) return;
 
   const state = cameraPresenceTarget;
-  const yawLimit = degToRad(4);
-  const pitchLimit = degToRad(3);
+  const yawLimit = THREE.MathUtils.degToRad(state === "THINKING" ? 4 : 2);
+  const pitchClampMin = THREE.MathUtils.degToRad(-15);
+  const pitchClampMax = THREE.MathUtils.degToRad(10);
   const fovLimit = 2;
+  const worldUp = new THREE.Vector3(0, 1, 0);
 
-  let targetPos = new THREE.Vector3(0, 0, 0);
-  let targetTarget = new THREE.Vector3(0, 0, 0);
-  let targetFov = 0;
-  let targetYaw = 0;
-  let targetPitch = 0;
+  let dist = cameraRigBase.distance;
+  let height = cameraRigBase.height;
+  let yaw = 0;
+  let pitch = 0;
+  let fovOffset = 0;
+  let extraY = 0;
 
   if (state === "LISTENING") {
-    targetPos.z = -cameraBasePose.position.z * 0.04;
-    targetPitch = degToRad(1.5);
+    dist *= 0.95;
+    pitch = THREE.MathUtils.degToRad(2);
   } else if (state === "THINKING") {
-    targetYaw = degToRad(Math.sin(time * 0.25) * 3);
-    targetFov = Math.sin(time * 0.4) * 1.2;
+    yaw = THREE.MathUtils.degToRad(Math.sin(time * 0.25) * 3);
+    fovOffset = Math.sin(time * 0.4) * 1.2;
   } else if (state === "SPEAKING") {
-    targetPos.y = Math.sin(time * 1.5) * 0.001;
+    extraY = Math.sin(time * 1.5) * 0.001;
   } else {
-    targetPos.y = Math.sin(time * 0.6) * 0.002;
+    extraY = Math.sin(time * 0.6) * 0.002;
   }
 
-  targetYaw = clamp(targetYaw, -yawLimit, yawLimit);
-  targetPitch = clamp(targetPitch, -pitchLimit, pitchLimit);
-  targetFov = clamp(targetFov, -fovLimit, fovLimit);
+  yaw = clamp(yaw, -yawLimit, yawLimit);
+  pitch = clamp(pitch, pitchClampMin, pitchClampMax);
+  fovOffset = clamp(fovOffset, -fovLimit, fovLimit);
+
+  const anchor = getHeadAnchor();
+  const desiredTarget = anchor.clone().add(new THREE.Vector3(0, cameraRigConfig.targetOffsetY, 0));
+
+  const back = cameraRigBase.back.clone();
+  const yawQuat = new THREE.Quaternion().setFromAxisAngle(worldUp, yaw);
+  back.applyQuaternion(yawQuat);
+  const right = new THREE.Vector3().crossVectors(worldUp, back).normalize();
+  const pitchQuat = new THREE.Quaternion().setFromAxisAngle(right, pitch);
+  back.applyQuaternion(pitchQuat).normalize();
+
+  const desiredPos = desiredTarget.clone()
+    .addScaledVector(back, dist)
+    .addScaledVector(worldUp, height + extraY);
+
+  desiredPos.y = Math.min(desiredPos.y, desiredTarget.y + cameraRigConfig.maxDeltaY);
 
   const t = Math.min(1, dt * 3);
-  cameraOffset.position.lerp(targetPos, t);
-  cameraOffset.target.lerp(targetTarget, t);
-  cameraOffset.fov = THREE.MathUtils.lerp(cameraOffset.fov, targetFov, t);
-  cameraOffset.yaw = THREE.MathUtils.lerp(cameraOffset.yaw, targetYaw, t);
-  cameraOffset.pitch = THREE.MathUtils.lerp(cameraOffset.pitch, targetPitch, t);
-
-  cameraBasePose.position.copy(camera.position);
-  cameraBasePose.target.copy(cameraTarget);
-  cameraBasePose.fov = camera.fov;
-
-  const basePos = cameraBasePose.position;
-  const baseTarget = cameraBasePose.target;
-
-  camera.position.copy(basePos).add(cameraOffset.position);
-  camera.fov = cameraBasePose.fov + cameraOffset.fov;
+  camera.position.lerp(desiredPos, t);
+  cameraTarget.lerp(desiredTarget, t);
+  camera.fov = THREE.MathUtils.lerp(camera.fov, cameraRigBase.fov + fovOffset, t);
   camera.updateProjectionMatrix();
+  camera.lookAt(cameraTarget);
 
-  const lookTarget = baseTarget.clone().add(cameraOffset.target);
-  camera.lookAt(lookTarget);
+  if (cameraPresenceLastLog !== state) {
+    const pitchDeg = THREE.MathUtils.radToDeg(pitch).toFixed(2);
+    const yawDeg = THREE.MathUtils.radToDeg(yaw).toFixed(2);
+    console.log(
+      `[CAM] state=${state} pos=(${formatVec(desiredPos)}) target=(${formatVec(desiredTarget)}) pitch=${pitchDeg} yaw=${yawDeg}`
+    );
+    cameraPresenceLastLog = state;
+  }
 
-  camera.rotateY(cameraOffset.yaw);
-  camera.rotateX(cameraOffset.pitch);
+  if (cameraDebug.enabled) {
+    ensureCameraDebugMarker();
+    if (cameraDebug.marker) cameraDebug.marker.position.copy(cameraTarget);
+  }
+
+  if (typeof controls !== "undefined" && controls) {
+    controls.target.copy(cameraTarget);
+    controls.object.position.copy(camera.position);
+    controls.update();
+  }
 }
 
 function setCameraPresenceState(state) {
   const next = (state || "IDLE").toUpperCase();
   if (next !== cameraPresenceTarget) {
-    console.log(`[CAM] state -> ${next}`);
     cameraPresenceTarget = next;
     cameraPresenceBlend = 0;
   }
