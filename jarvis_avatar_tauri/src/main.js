@@ -25,6 +25,23 @@ scene.background = new THREE.Color(0x111111);
 
 const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 100);
 camera.position.set(0, 1.45, 1.2);
+const cameraTarget = new THREE.Vector3(0, 1.45, 0);
+let cameraDynamicEnabled = true;
+let cameraPresenceState = "IDLE";
+let cameraPresenceTarget = "IDLE";
+let cameraPresenceBlend = 0;
+const cameraBasePose = {
+  position: camera.position.clone(),
+  target: cameraTarget.clone(),
+  fov: camera.fov,
+};
+const cameraOffset = {
+  position: new THREE.Vector3(0, 0, 0),
+  target: new THREE.Vector3(0, 0, 0),
+  fov: 0,
+  yaw: 0,
+  pitch: 0,
+};
 
 scene.add(new THREE.AmbientLight(0xffffff, 0.8));
 const dir = new THREE.DirectionalLight(0xffffff, 1.4);
@@ -163,6 +180,71 @@ const EMO_CHANNELS = ["angry", "relaxed", "happy", "sad", "Surprised"];
 // Helpers
 // -----------------------------
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const degToRad = (deg) => (deg * Math.PI) / 180;
+
+function updateCameraRig(dt, time) {
+  if (!cameraDynamicEnabled) return;
+
+  const state = cameraPresenceTarget;
+  const yawLimit = degToRad(4);
+  const pitchLimit = degToRad(3);
+  const fovLimit = 2;
+
+  let targetPos = new THREE.Vector3(0, 0, 0);
+  let targetTarget = new THREE.Vector3(0, 0, 0);
+  let targetFov = 0;
+  let targetYaw = 0;
+  let targetPitch = 0;
+
+  if (state === "LISTENING") {
+    targetPos.z = -cameraBasePose.position.z * 0.04;
+    targetPitch = degToRad(1.5);
+  } else if (state === "THINKING") {
+    targetYaw = degToRad(Math.sin(time * 0.25) * 3);
+    targetFov = Math.sin(time * 0.4) * 1.2;
+  } else if (state === "SPEAKING") {
+    targetPos.y = Math.sin(time * 1.5) * 0.001;
+  } else {
+    targetPos.y = Math.sin(time * 0.6) * 0.002;
+  }
+
+  targetYaw = clamp(targetYaw, -yawLimit, yawLimit);
+  targetPitch = clamp(targetPitch, -pitchLimit, pitchLimit);
+  targetFov = clamp(targetFov, -fovLimit, fovLimit);
+
+  const t = Math.min(1, dt * 3);
+  cameraOffset.position.lerp(targetPos, t);
+  cameraOffset.target.lerp(targetTarget, t);
+  cameraOffset.fov = THREE.MathUtils.lerp(cameraOffset.fov, targetFov, t);
+  cameraOffset.yaw = THREE.MathUtils.lerp(cameraOffset.yaw, targetYaw, t);
+  cameraOffset.pitch = THREE.MathUtils.lerp(cameraOffset.pitch, targetPitch, t);
+
+  cameraBasePose.position.copy(camera.position);
+  cameraBasePose.target.copy(cameraTarget);
+  cameraBasePose.fov = camera.fov;
+
+  const basePos = cameraBasePose.position;
+  const baseTarget = cameraBasePose.target;
+
+  camera.position.copy(basePos).add(cameraOffset.position);
+  camera.fov = cameraBasePose.fov + cameraOffset.fov;
+  camera.updateProjectionMatrix();
+
+  const lookTarget = baseTarget.clone().add(cameraOffset.target);
+  camera.lookAt(lookTarget);
+
+  camera.rotateY(cameraOffset.yaw);
+  camera.rotateX(cameraOffset.pitch);
+}
+
+function setCameraPresenceState(state) {
+  const next = (state || "IDLE").toUpperCase();
+  if (next !== cameraPresenceTarget) {
+    console.log(`[CAM] state -> ${next}`);
+    cameraPresenceTarget = next;
+    cameraPresenceBlend = 0;
+  }
+}
 
 function listExpressions() {
   const em = vrm?.expressionManager;
@@ -938,6 +1020,7 @@ function connectWS() {
       }
       if (typeof msg.conversation_state === "string") {
         applyPresenceState(msg.conversation_state);
+        setCameraPresenceState(msg.conversation_state);
       }
       if (msg.conversation_state === "LISTENING") {
         clearTtsQueue();
@@ -1029,6 +1112,13 @@ function connectWS() {
 
 connectWS();
 
+window.addEventListener("keydown", (event) => {
+  if (event.key?.toLowerCase() === "c") {
+    cameraDynamicEnabled = !cameraDynamicEnabled;
+    console.log(`[CAM] dynamic ${cameraDynamicEnabled ? "ON" : "OFF"}`);
+  }
+});
+
 // -----------------------------
 // Resize + loop
 // -----------------------------
@@ -1051,6 +1141,7 @@ function animate() {
   updateBurst(dt);
   updatePresence(dt);
   applyPresencePose(dt, clock.elapsedTime);
+  updateCameraRig(dt, clock.elapsedTime);
 
   if (vrm) {
     applyBreathing(vrm, dt);
