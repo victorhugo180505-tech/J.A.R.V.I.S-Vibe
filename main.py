@@ -434,7 +434,8 @@ try:
 
     threading.Thread(target=stdin_worker, daemon=True).start()
 
-    wake_word = "oye jarvis"
+    wake_words = ("oye jarvis", "hey jarvis")
+    wake_ttl_seconds = float(os.getenv("WAKE_TTL_SECONDS", "30"))
     armed_until = {"value": 0.0}
 
     def play_wake_beep():
@@ -449,9 +450,10 @@ try:
         if not cleaned:
             return
         now = time.time()
-        if wake_word in cleaned:
-            remainder = cleaned.replace(wake_word, "").strip(" ,.")
-            armed_until["value"] = now + 6.0
+        matched_wake = next((word for word in wake_words if word in cleaned), None)
+        if matched_wake:
+            remainder = cleaned.replace(matched_wake, "").strip(" ,.")
+            armed_until["value"] = now + wake_ttl_seconds
             state.set_wake_active(True)
             play_wake_beep()
             threading.Timer(1.2, lambda: state.set_wake_active(False)).start()
