@@ -80,3 +80,49 @@ html, body { margin:0; height:100%; overflow:hidden; background:#111; }
   background: #35f2ff;
   box-shadow: 0 0 10px rgba(53, 242, 255, 0.9);
 }
+
+#subtitle-overlay {
+  position: fixed;
+  left: 50%;
+  bottom: 48px;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 9000;
+  width: min(80vw, 720px);
+  pointer-events: none;
+  font-family: "Segoe UI", system-ui, sans-serif;
+}
+
+.subtitle-line {
+  padding: 8px 14px;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 16px;
+  line-height: 1.4;
+  text-align: center;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity 0.4s ease, transform 0.4s ease;
+}
+
+.subtitle-line.is-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.subtitle-line.is-fading {
+  opacity: 0;
+  transform: translateY(8px);
+}
+
+.subtitle-line.role-user {
+  border: 1px solid rgba(120, 210, 255, 0.45);
+}
+
+.subtitle-line.role-jarvis {
+  border: 1px solid rgba(120, 255, 180, 0.45);
+}
