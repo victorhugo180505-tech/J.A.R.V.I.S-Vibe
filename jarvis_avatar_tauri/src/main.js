@@ -45,6 +45,14 @@ const cameraDebug = {
   marker: null,
 };
 let cameraPresenceLastLog = null;
+let modelRadius = 0;
+const modelCenter = new THREE.Vector3();
+const modelBox = new THREE.Box3();
+const debugHelpers = {
+  grid: null,
+  axes: null,
+  box: null,
+};
 
 scene.add(new THREE.AmbientLight(0xffffff, 0.8));
 const dir = new THREE.DirectionalLight(0xffffff, 1.4);
@@ -185,12 +193,97 @@ const EMO_CHANNELS = ["angry", "relaxed", "happy", "sad", "Surprised"];
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const formatVec = (v) => `${v.x.toFixed(3)},${v.y.toFixed(3)},${v.z.toFixed(3)}`;
 
+function updateCameraRigBase() {
+  cameraRigBase.distance = camera.position.distanceTo(cameraTarget);
+  cameraRigBase.height = camera.position.y - cameraTarget.y;
+  cameraRigBase.back.subVectors(camera.position, cameraTarget).normalize();
+  cameraRigBase.fov = camera.fov;
+}
+
 function ensureCameraDebugMarker() {
   if (!cameraDebug.enabled || cameraDebug.marker) return;
   const geo = new THREE.SphereGeometry(0.015, 16, 16);
   const mat = new THREE.MeshBasicMaterial({ color: 0xff00ff });
   cameraDebug.marker = new THREE.Mesh(geo, mat);
   scene.add(cameraDebug.marker);
+}
+
+function ensureDebugHelpers() {
+  if (!debugHelpers.grid) {
+    debugHelpers.grid = new THREE.GridHelper(4, 12, 0x444444, 0x222222);
+    debugHelpers.grid.visible = false;
+    scene.add(debugHelpers.grid);
+  }
+  if (!debugHelpers.axes) {
+    debugHelpers.axes = new THREE.AxesHelper(0.5);
+    debugHelpers.axes.visible = false;
+    scene.add(debugHelpers.axes);
+  }
+  if (!debugHelpers.box) {
+    debugHelpers.box = new THREE.Box3Helper(modelBox, 0x00ffff);
+    debugHelpers.box.visible = false;
+    scene.add(debugHelpers.box);
+  }
+}
+
+function frameModel() {
+  if (!vrm?.scene) return;
+  modelBox.setFromObject(vrm.scene);
+  modelBox.getCenter(modelCenter);
+  const size = modelBox.getSize(new THREE.Vector3());
+  const radius = Math.max(0.001, size.length() / 2);
+  modelRadius = radius;
+
+  const target = modelCenter.clone().add(new THREE.Vector3(0, radius * 0.15, 0));
+  cameraTarget.copy(target);
+  camera.position.copy(modelCenter).add(new THREE.Vector3(0, radius * 0.25, radius * 2.2));
+  camera.near = Math.max(0.01, radius / 50);
+  camera.far = radius * 50;
+  camera.updateProjectionMatrix();
+  updateCameraRigBase();
+
+  if (typeof controls !== "undefined" && controls) {
+    controls.target.copy(cameraTarget);
+    controls.object.position.copy(camera.position);
+    controls.update();
+  }
+
+  ensureDebugHelpers();
+  if (debugHelpers.box) {
+    debugHelpers.box.visible = Boolean(debugHelpers.box.visible);
+    debugHelpers.box.updateMatrixWorld(true);
+  }
+}
+
+function validateCameraPose() {
+  if (!modelRadius) return;
+  const pos = camera.position;
+  const target = cameraTarget;
+  const isFiniteVec = (v) => Number.isFinite(v.x) && Number.isFinite(v.y) && Number.isFinite(v.z);
+  if (!isFiniteVec(pos) || !isFiniteVec(target)) {
+    console.warn("[CAM] failsafe invalid position/target", { pos, target, radius: modelRadius });
+    frameModel();
+    return;
+  }
+
+  const dist = pos.distanceTo(target);
+  const minDist = modelRadius * 0.5;
+  const maxDist = modelRadius * 20;
+  const dir = new THREE.Vector3().subVectors(target, pos).normalize();
+  const pitch = Math.asin(clamp(dir.y, -1, 1));
+  const pitchMin = THREE.MathUtils.degToRad(-15);
+  const pitchMax = THREE.MathUtils.degToRad(10);
+
+  if (dist < minDist || dist > maxDist || pitch < pitchMin || pitch > pitchMax) {
+    console.warn("[CAM] failsafe pose out of bounds", {
+      pos: formatVec(pos),
+      target: formatVec(target),
+      dist: dist.toFixed(3),
+      radius: modelRadius.toFixed(3),
+      pitch: THREE.MathUtils.radToDeg(pitch).toFixed(2),
+    });
+    frameModel();
+  }
 }
 
 function getHeadAnchor() {
@@ -709,6 +802,7 @@ loader.load(
     console.log("✅ VRM cargado OK");
     console.log("🎭 Expresiones detectadas:", expressionKeys);
 
+    frameModel();
     applyMood();
   },
   undefined,
@@ -1153,9 +1247,22 @@ function connectWS() {
 connectWS();
 
 window.addEventListener("keydown", (event) => {
-  if (event.key?.toLowerCase() === "c") {
+  const key = event.key?.toLowerCase();
+  if (key === "c") {
     cameraDynamicEnabled = !cameraDynamicEnabled;
     console.log(`[CAM] dynamic ${cameraDynamicEnabled ? "ON" : "OFF"}`);
+  }
+  if (key === "f") {
+    frameModel();
+  }
+  if (key === "g") {
+    ensureDebugHelpers();
+    debugHelpers.grid.visible = !debugHelpers.grid.visible;
+    debugHelpers.axes.visible = !debugHelpers.axes.visible;
+  }
+  if (key === "b") {
+    ensureDebugHelpers();
+    debugHelpers.box.visible = !debugHelpers.box.visible;
   }
 });
 
@@ -1172,6 +1279,7 @@ window.addEventListener("resize", resize);
 resize();
 
 const clock = new THREE.Clock();
+let cameraValidateCounter = 0;
 function animate() {
   requestAnimationFrame(animate);
   const dt = clock.getDelta();
@@ -1182,6 +1290,10 @@ function animate() {
   updatePresence(dt);
   applyPresencePose(dt, clock.elapsedTime);
   updateCameraRig(dt, clock.elapsedTime);
+  cameraValidateCounter += 1;
+  if (cameraValidateCounter % 30 === 0) {
+    validateCameraPose();
+  }
 
   if (vrm) {
     applyBreathing(vrm, dt);
