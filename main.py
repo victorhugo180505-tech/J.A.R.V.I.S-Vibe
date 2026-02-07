@@ -302,6 +302,7 @@ def handle_user_text(user_text: str):
         _safe_print("ℹ️ Modo cambiado. Escribe tu mensaje después de /code o /chat.")
         return
 
+    state.set_last_user_utterance(user_text)
     add_message("user", user_text)
 
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -333,6 +334,7 @@ def handle_user_text(user_text: str):
     tts_text = prepare_tts_text(speech)
 
     add_message("assistant", speech)
+    state.set_last_jarvis_utterance(speech)
     _safe_print(f"Jarvis [{task_type}] ({emo}): {speech}")
 
     # 1) mood persistente
@@ -438,35 +440,6 @@ try:
     wake_ttl_seconds = float(os.getenv("WAKE_TTL_SECONDS", "30"))
     armed_until = {"value": 0.0}
 
-    # >>>>>> FIX: ventana real de wake (6s) + cancelación de timer anterior <<<<<<
-    wake_timer = {"t": None}
-
-    def _disarm():
-        armed_until["value"] = 0.0
-        try:
-            state.set_wake_active(False)
-        except Exception:
-            pass
-
-    def _arm(now: float, ttl: float = 6.0):
-        armed_until["value"] = now + ttl
-        try:
-            state.set_wake_active(True)
-        except Exception:
-            pass
-
-        if wake_timer["t"] is not None:
-            try:
-                wake_timer["t"].cancel()
-            except Exception:
-                pass
-
-        t = threading.Timer(ttl, _disarm)
-        t.daemon = True
-        wake_timer["t"] = t
-        t.start()
-    # >>>>>> FIN FIX <<<<<<
-
     def play_wake_beep():
         try:
             import winsound
@@ -475,38 +448,26 @@ try:
             return
 
     def on_transcript(text: str):
-        raw = normalize_text(text)
-        cleaned = raw.lower()
-        if not cleaned:
+        raw_text = normalize_text(text)
+        if not raw_text:
             return
-
+        cleaned = raw_text.lower()
         now = time.time()
-
-        # (Opcional) Log útil mientras lo validas, luego puedes borrarlo.
-        _safe_print(f"[STT] raw='{raw}' now={now:.2f} armed_until={armed_until['value']:.2f}")
-
-        if wake_word in cleaned:
-            # Quita wakeword sin destruir el texto original (case-insensitive)
-            remainder = re.sub(re.escape(wake_word), "", raw, flags=re.IGNORECASE).strip(" ,.")
-            _arm(now, ttl=6.0)
+        matched_wake = next((word for word in wake_words if word in cleaned), None)
+        if matched_wake:
+            remainder = re.sub(re.escape(matched_wake), "", raw_text, flags=re.IGNORECASE).strip(" ,.")
+            armed_until["value"] = now + wake_ttl_seconds
+            state.set_wake_active(True)
             play_wake_beep()
-
+            threading.Timer(1.2, lambda: state.set_wake_active(False)).start()
             if remainder:
-                _safe_print("[STT] wake+remainder -> enqueue remainder")
                 input_queue.put(remainder)
-                _disarm()
-            else:
-                _safe_print("[STT] wake-only -> armed, waiting next utterance")
+                state.set_wake_active(False)
             return
-
         if now <= armed_until["value"]:
-            _safe_print("[STT] within wake window -> enqueue")
-            input_queue.put(raw)
+            input_queue.put(raw_text)
             armed_until["value"] = 0.0
-            _disarm()
-            return
-
-        _safe_print("[STT] ignored (not armed)")
+            state.set_wake_active(False)
 
     whisper_listener.start(on_transcript)
 
