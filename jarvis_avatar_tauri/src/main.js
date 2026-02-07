@@ -23,9 +23,14 @@ renderer.setPixelRatio(window.devicePixelRatio);
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x111111);
 
-const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 100);
-camera.position.set(0, 1.45, 1.2);
-const cameraTarget = new THREE.Vector3(0, 1.45, 0);
+const BASE_CLOSEUP = {
+  position: new THREE.Vector3(0, 1.45, 0.95),
+  target: new THREE.Vector3(0, 1.45, 0),
+  fov: 34,
+};
+const camera = new THREE.PerspectiveCamera(BASE_CLOSEUP.fov, 1, 0.1, 100);
+camera.position.copy(BASE_CLOSEUP.position);
+const cameraTarget = BASE_CLOSEUP.target.clone();
 let cameraDynamicEnabled = true;
 let cameraPresenceState = "IDLE";
 let cameraPresenceTarget = "IDLE";
@@ -207,6 +212,22 @@ function updateCameraRigBase() {
   cameraRigBase.fov = camera.fov;
 }
 
+function applyBaseCloseup() {
+  camera.position.copy(BASE_CLOSEUP.position);
+  cameraTarget.copy(BASE_CLOSEUP.target);
+  camera.fov = BASE_CLOSEUP.fov;
+  camera.updateProjectionMatrix();
+  updateCameraRigBase();
+
+  if (typeof controls !== "undefined" && controls) {
+    controls.target?.copy(cameraTarget);
+    if (controls.object?.position) {
+      controls.object.position.copy(camera.position);
+    }
+    controls.update?.();
+  }
+}
+
 function getHumanoidBone(humanoid, name) {
   return (
     humanoid?.getNormalizedBoneNode?.(name) ||
@@ -373,7 +394,7 @@ function updateCameraRig(dt, time) {
   if (!cameraDynamicEnabled) return;
 
   const state = cameraPresenceTarget;
-  const yawLimit = THREE.MathUtils.degToRad(state === "THINKING" ? 4 : 2);
+  const yawLimit = THREE.MathUtils.degToRad(2);
   const pitchClampMin = THREE.MathUtils.degToRad(-15);
   const pitchClampMax = THREE.MathUtils.degToRad(10);
   const fovLimit = 2;
@@ -387,14 +408,15 @@ function updateCameraRig(dt, time) {
   let extraY = 0;
 
   if (state === "LISTENING") {
-    dist *= 0.95;
-    pitch = THREE.MathUtils.degToRad(2);
+    dist *= 0.99;
+    pitch = THREE.MathUtils.degToRad(0.8);
   } else if (state === "THINKING") {
-    yaw = THREE.MathUtils.degToRad(Math.sin(time * 0.25) * 3);
-    fovOffset = Math.sin(time * 0.4) * 1.2;
+    dist *= 1.01;
+    yaw = THREE.MathUtils.degToRad(Math.sin(time * 0.25) * 2);
+    fovOffset = Math.sin(time * 0.4) * 0.6;
   } else if (state === "SPEAKING") {
-    dist *= 0.93;
-    extraY = Math.sin(time * 1.5) * 0.0002;
+    dist *= 0.97;
+    extraY = Math.sin(time * 1.5) * 0.0001;
   } else {
     extraY = Math.sin(time * 0.6) * 0.002;
   }
@@ -884,7 +906,7 @@ loader.load(
     console.log("✅ VRM cargado OK");
     console.log("🎭 Expresiones detectadas:", expressionKeys);
 
-    frameModel();
+    applyBaseCloseup();
     applyMood();
   },
   undefined,
@@ -1334,6 +1356,14 @@ window.addEventListener("keydown", (event) => {
     cameraDynamicEnabled = !cameraDynamicEnabled;
     console.log(`[CAM] dynamic ${cameraDynamicEnabled ? "ON" : "OFF"}`);
   }
+  if (key === "k") {
+    const target = typeof controls !== "undefined" && controls?.target ? controls.target : cameraTarget;
+    console.log("[CAM] closeup capture", {
+      position: camera.position.toArray(),
+      target: target.toArray(),
+      fov: camera.fov,
+    });
+  }
   if (key === "p") {
     gestureState.enabled = !gestureState.enabled;
     console.log(`[GESTURE] thinking ${gestureState.enabled ? "ON" : "OFF"}`);
@@ -1363,6 +1393,7 @@ function resize() {
 }
 window.addEventListener("resize", resize);
 resize();
+applyBaseCloseup();
 
 const clock = new THREE.Clock();
 let cameraValidateCounter = 0;
