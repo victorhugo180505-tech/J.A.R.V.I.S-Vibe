@@ -53,6 +53,13 @@ const debugHelpers = {
   axes: null,
   box: null,
 };
+const gestureState = {
+  enabled: true,
+  alpha: 0,
+  upperArm: null,
+  lowerArm: null,
+  hand: null,
+};
 
 scene.add(new THREE.AmbientLight(0xffffff, 0.8));
 const dir = new THREE.DirectionalLight(0xffffff, 1.4);
@@ -208,6 +215,60 @@ function getHumanoidBone(humanoid, name) {
   );
 }
 
+function captureGestureBasePose(humanoid) {
+  if (!humanoid) return;
+  const upperArm = getHumanoidBone(humanoid, "rightUpperArm");
+  const lowerArm = getHumanoidBone(humanoid, "rightLowerArm");
+  const hand = getHumanoidBone(humanoid, "rightHand");
+
+  if (upperArm && !gestureState.upperArm) {
+    gestureState.upperArm = upperArm.quaternion.clone();
+  }
+  if (lowerArm && !gestureState.lowerArm) {
+    gestureState.lowerArm = lowerArm.quaternion.clone();
+  }
+  if (hand && !gestureState.hand) {
+    gestureState.hand = hand.quaternion.clone();
+  }
+}
+
+function applyThinkingGesture(dt) {
+  const humanoid = vrm?.humanoid;
+  if (!humanoid) return;
+
+  captureGestureBasePose(humanoid);
+
+  const upperArm = getHumanoidBone(humanoid, "rightUpperArm");
+  const lowerArm = getHumanoidBone(humanoid, "rightLowerArm");
+  const hand = getHumanoidBone(humanoid, "rightHand");
+
+  if (!upperArm || !lowerArm || !hand) return;
+  if (!gestureState.upperArm || !gestureState.lowerArm || !gestureState.hand) return;
+
+  const targetAlpha = gestureState.enabled && presenceTarget === "THINKING" ? 1 : 0;
+  const speed = 1 / 0.3;
+  const t = Math.min(1, dt * speed);
+  gestureState.alpha += (targetAlpha - gestureState.alpha) * t;
+
+  const upperOffset = new THREE.Quaternion().setFromEuler(
+    new THREE.Euler(THREE.MathUtils.degToRad(-20), THREE.MathUtils.degToRad(15), THREE.MathUtils.degToRad(10))
+  );
+  const lowerOffset = new THREE.Quaternion().setFromEuler(
+    new THREE.Euler(THREE.MathUtils.degToRad(-55), THREE.MathUtils.degToRad(5), THREE.MathUtils.degToRad(5))
+  );
+  const handOffset = new THREE.Quaternion().setFromEuler(
+    new THREE.Euler(THREE.MathUtils.degToRad(-10), THREE.MathUtils.degToRad(15), THREE.MathUtils.degToRad(-10))
+  );
+
+  const upperTarget = gestureState.upperArm.clone().multiply(upperOffset);
+  const lowerTarget = gestureState.lowerArm.clone().multiply(lowerOffset);
+  const handTarget = gestureState.hand.clone().multiply(handOffset);
+
+  upperArm.quaternion.slerp(upperTarget, gestureState.alpha);
+  lowerArm.quaternion.slerp(lowerTarget, gestureState.alpha);
+  hand.quaternion.slerp(handTarget, gestureState.alpha);
+}
+
 function ensureCameraDebugMarker() {
   if (!cameraDebug.enabled || cameraDebug.marker) return;
   const geo = new THREE.SphereGeometry(0.015, 16, 16);
@@ -332,7 +393,8 @@ function updateCameraRig(dt, time) {
     yaw = THREE.MathUtils.degToRad(Math.sin(time * 0.25) * 3);
     fovOffset = Math.sin(time * 0.4) * 1.2;
   } else if (state === "SPEAKING") {
-    extraY = Math.sin(time * 1.5) * 0.001;
+    dist *= 0.93;
+    extraY = Math.sin(time * 1.5) * 0.0002;
   } else {
     extraY = Math.sin(time * 0.6) * 0.002;
   }
@@ -392,6 +454,9 @@ function setCameraPresenceState(state) {
   if (next !== cameraPresenceTarget) {
     cameraPresenceTarget = next;
     cameraPresenceBlend = 0;
+    console.log(
+      `[CAM] state=${next} gestureAlpha=${gestureState.alpha.toFixed(2)} dist=${cameraRigBase.distance.toFixed(3)} height=${cameraRigBase.height.toFixed(3)}`
+    );
   }
 }
 
@@ -689,7 +754,7 @@ function applyMicroGaze(dt) {
   }
 }
 
-function applyBreathing(vrm, dt) {
+function applyBreathing(vrm, dt, intensity = 1) {
   breatheT += dt * 1.2;
 
   const h = vrm.humanoid;
@@ -698,8 +763,8 @@ function applyBreathing(vrm, dt) {
   const head = h.getNormalizedBoneNode("head") || h.getNormalizedBoneNode("neck");
 
   const chestNode = upperChest || chest;
-  const a = Math.sin(breatheT);
-  const b = Math.sin(breatheT * 0.5 + 1.7);
+  const a = Math.sin(breatheT) * intensity;
+  const b = Math.sin(breatheT * 0.5 + 1.7) * intensity;
 
   if (chestNode) {
     chestNode.rotation.x = 0.05 + a * 0.03;
@@ -812,6 +877,7 @@ loader.load(
     if (vrm.lookAt) vrm.lookAt.target = lookTarget;
 
     applyRelaxPose(vrm);
+    captureGestureBasePose(vrm.humanoid);
 
     expressionKeys = listExpressions();
 
@@ -1268,6 +1334,10 @@ window.addEventListener("keydown", (event) => {
     cameraDynamicEnabled = !cameraDynamicEnabled;
     console.log(`[CAM] dynamic ${cameraDynamicEnabled ? "ON" : "OFF"}`);
   }
+  if (key === "p") {
+    gestureState.enabled = !gestureState.enabled;
+    console.log(`[GESTURE] thinking ${gestureState.enabled ? "ON" : "OFF"}`);
+  }
   if (key === "f") {
     frameModel();
   }
@@ -1316,7 +1386,12 @@ function animate() {
   }
 
   if (vrm) {
-    applyBreathing(vrm, dt);
+    const breatheScale =
+      presenceTarget === "SPEAKING" ? 0.1 :
+      presenceTarget === "THINKING" ? 0.4 :
+      1;
+    applyBreathing(vrm, dt, breatheScale);
+    applyThinkingGesture(dt);
     applyAutoBlink(vrm, dt);
     applyHeadTracking(vrm, dt);
 
