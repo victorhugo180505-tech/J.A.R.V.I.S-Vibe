@@ -302,6 +302,7 @@ def handle_user_text(user_text: str):
         _safe_print("ℹ️ Modo cambiado. Escribe tu mensaje después de /code o /chat.")
         return
 
+    state.set_last_user_utterance(user_text)
     add_message("user", user_text)
 
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -333,6 +334,7 @@ def handle_user_text(user_text: str):
     tts_text = prepare_tts_text(speech)
 
     add_message("assistant", speech)
+    state.set_last_jarvis_utterance(speech)
     _safe_print(f"Jarvis [{task_type}] ({emo}): {speech}")
 
     # 1) mood persistente
@@ -407,6 +409,7 @@ server_handles = start_local_servers()
 
 avatar = AvatarWSClient("ws://127.0.0.1:8765")
 avatar.start()
+state.set_state_change_handler(avatar.send_json)
 control_server = ControlServer(state)
 control_server.start()
 whisper_listener = AzureSpeechListener(
@@ -433,7 +436,8 @@ try:
 
     threading.Thread(target=stdin_worker, daemon=True).start()
 
-    wake_word = "oye jarvis"
+    wake_words = ("oye jarvis", "hey jarvis")
+    wake_ttl_seconds = float(os.getenv("WAKE_TTL_SECONDS", "30"))
     armed_until = {"value": 0.0}
 
     def play_wake_beep():
@@ -444,13 +448,15 @@ try:
             return
 
     def on_transcript(text: str):
-        cleaned = normalize_text(text).lower()
-        if not cleaned:
+        raw_text = normalize_text(text)
+        if not raw_text:
             return
+        cleaned = raw_text.lower()
         now = time.time()
-        if wake_word in cleaned:
-            remainder = cleaned.replace(wake_word, "").strip(" ,.")
-            armed_until["value"] = now + 6.0
+        matched_wake = next((word for word in wake_words if word in cleaned), None)
+        if matched_wake:
+            remainder = re.sub(re.escape(matched_wake), "", raw_text, flags=re.IGNORECASE).strip(" ,.")
+            armed_until["value"] = now + wake_ttl_seconds
             state.set_wake_active(True)
             play_wake_beep()
             threading.Timer(1.2, lambda: state.set_wake_active(False)).start()
@@ -459,7 +465,7 @@ try:
                 state.set_wake_active(False)
             return
         if now <= armed_until["value"]:
-            input_queue.put(cleaned)
+            input_queue.put(raw_text)
             armed_until["value"] = 0.0
             state.set_wake_active(False)
 

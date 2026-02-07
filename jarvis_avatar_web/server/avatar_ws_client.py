@@ -55,6 +55,9 @@ class AvatarWSClient:
         if isinstance(payload, dict):
             self._q.put(payload)
 
+    def send_json(self, payload: dict):
+        self.send_raw(payload)
+
     # --- internals ---
     def _run_thread(self):
         asyncio.run(self._main())
