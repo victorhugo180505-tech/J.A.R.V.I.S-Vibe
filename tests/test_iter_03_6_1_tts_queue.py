@@ -53,3 +53,13 @@ def test_subtitle_updates_on_play():
     player = DummyPlayer()
     player.enqueue({"tts_session_id": "a", "seq": 1, "subtitle": "hola"})
     assert player.subtitle_updates == ["hola"]
+
+
+def test_cancel_clears_queue():
+    player = DummyPlayer()
+    player.enqueue({"tts_session_id": "a", "seq": 1, "subtitle": "hola"})
+    player.enqueue({"tts_session_id": "a", "seq": 2, "subtitle": "mundo"})
+    assert len(player.queue) == 1
+    player.stop()
+    player.queue.clear()
+    assert player.queue == []

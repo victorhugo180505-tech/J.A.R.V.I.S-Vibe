@@ -853,6 +853,12 @@ function connectWS() {
       return;
     }
 
+    if (msg.type === "tts_cancel") {
+      clearTtsQueue();
+      stopCurrentAudio();
+      return;
+    }
+
     if (msg.type === "subtitle" && typeof msg.text === "string") {
       enqueueSubtitle(msg.role, msg.text);
       return;

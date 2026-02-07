@@ -37,6 +37,7 @@ from core.control_server import ControlServer
 from core.state import state
 from core.stt_azure import AzureSpeechListener
 from core.subtitles import emit_subtitle
+from core.wake_bargein import detect_wake_word, trigger_wake_barge_in
 from core.tts_chunker import send_tts_chunks
 
 # ===============================
@@ -353,6 +354,7 @@ def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
             tts_session_id["value"] += 1
             session_token = tts_session_id["value"]
             tts_session_key = f"{int(time.time()*1000)}-{session_token}"
+            tts_session_id["key"] = tts_session_key
 
             def synthesize_chunk(text: str):
                 return synthesize_tts_with_visemes(
@@ -409,7 +411,7 @@ server_handles = start_local_servers()
 
 avatar = AvatarWSClient("ws://127.0.0.1:8765")
 avatar.start()
-tts_session_id = {"value": 0}
+tts_session_id = {"value": 0, "key": None}
 
 def get_tts_session_id() -> int:
     return tts_session_id["value"]
@@ -452,6 +454,7 @@ try:
     wake_words = ("oye jarvis", "hey jarvis")
     wake_ttl_seconds = float(os.getenv("WAKE_TTL_SECONDS", "30"))
     armed_until = {"value": 0.0}
+    last_wake_ts = {"value": 0.0}
 
     def play_wake_beep():
         try:
@@ -465,13 +468,14 @@ try:
         if not raw_text:
             return
         emit_subtitle(state, avatar.send_json, "user", raw_text)
-        cleaned = raw_text.lower()
         now = time.time()
-        matched_wake = next((word for word in wake_words if word in cleaned), None)
+        matched_wake, remainder = detect_wake_word(raw_text, wake_words)
         if matched_wake:
-            remainder = re.sub(re.escape(matched_wake), "", raw_text, flags=re.IGNORECASE).strip(" ,.")
+            if now - last_wake_ts["value"] < 0.4:
+                return
+            last_wake_ts["value"] = now
+            trigger_wake_barge_in(state, avatar.send_json, tts_session_id)
             armed_until["value"] = now + wake_ttl_seconds
-            state.set_wake_active(True)
             play_wake_beep()
             threading.Timer(1.2, lambda: state.set_wake_active(False)).start()
             if remainder:
