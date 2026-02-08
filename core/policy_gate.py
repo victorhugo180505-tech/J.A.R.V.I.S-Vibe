@@ -5,6 +5,7 @@ from core.actions_contract import ActionRequest
 
 SENSITIVE_TYPES = {
     "delete_memory",
+    "reset_memory",
     "calendar_write",
     "github_write",
     "screenshare_toggle",

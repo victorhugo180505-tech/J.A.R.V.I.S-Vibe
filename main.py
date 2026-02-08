@@ -29,7 +29,7 @@ from core.actions_contract import action_request_from_dict
 from core.memory import add_message, get_conversation
 from core.policy_gate import classify_action
 from core.parser import parse_response
-from actions.dispatcher import dispatch_action
+from actions.dispatcher import cancel_pending_action, confirm_pending_action, dispatch_action
 
 from jarvis_avatar_web.server.avatar_ws_client import AvatarWSClient
 from jarvis_avatar_web.server import mouse_stream_auto
@@ -76,6 +76,9 @@ Formato obligatorio:
 
 1) open_app
 data: { "app_name": "nombre de la aplicación" }
+Apps permitidas (app_name canónico):
+- notepad
+- spotify
 
 2) open_url
 data: { "url": "https://..." }
@@ -91,8 +94,13 @@ data:
 4) play_spotify
 Usar SOLO para música.
 
+5) reset_memory
+data: {}
+
 === REGLAS ===
+- Si el usuario pide "bloc de notas" o "notas" → open_app con app_name "notepad"
 - Si el usuario menciona video, youtube, reproducción, pausa, volumen → youtube_control
+- Si el usuario pregunta "qué puedes hacer" responde con la lista de acciones soportadas (sin campos extra)
 - NUNCA simules teclado
 - Si no hay acción clara → type = "none"
 - No inventes acciones que no existan
@@ -297,6 +305,23 @@ def parse_or_repair_json(
 # ===============================
 
 def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
+    normalized_input = (user_text or "").strip().lower()
+    if normalized_input in {"confirmar", "confirm"}:
+        result = confirm_pending_action(send_fn=avatar.send_json, state=state)
+        if result is None:
+            _safe_print("ℹ️ No hay acción pendiente para confirmar.")
+        elif result.ok:
+            _safe_print("✔ " + str(result.output))
+        else:
+            _safe_print("⚠️ Acción no ejecutada: " + str(result.error))
+        return
+    if normalized_input in {"cancelar", "cancel"}:
+        result = cancel_pending_action(send_fn=avatar.send_json, state=state)
+        if result is None:
+            _safe_print("ℹ️ No hay acción pendiente para cancelar.")
+        else:
+            _safe_print("⚠️ Acción cancelada.")
+        return
     user_text = normalize_text(user_text)
     if not user_text:
         return

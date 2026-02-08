@@ -5,7 +5,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from actions.dispatcher import dispatch_action
+from actions.dispatcher import cancel_pending_action, confirm_pending_action, dispatch_action
 from core.actions_contract import ActionRequest
 from core.policy_gate import classify_action
 from core.state import JarvisState
@@ -89,3 +89,73 @@ def test_sensitive_action_with_confirm_executes(monkeypatch):
 
     assert result.ok is True
     assert called["open_app"] is True
+
+
+def test_pending_action_confirm_flow(monkeypatch):
+    called = {"open_app": False}
+
+    def fake_open_app(_):
+        called["open_app"] = True
+
+    monkeypatch.setattr("actions.dispatcher.open_app", fake_open_app)
+
+    state = JarvisState()
+    sent = []
+
+    def send_fn(payload):
+        sent.append(payload)
+
+    action = ActionRequest(
+        action_id="action-4",
+        type="open_app",
+        data={"app_name": "Notas"},
+        provider="cloud",
+        requires_confirm=False,
+        risk="low",
+        summary="",
+    )
+    apply_classification(action)
+    blocked = dispatch_action(action, send_fn=send_fn, state=state)
+    assert blocked.ok is False
+
+    result = confirm_pending_action(send_fn=send_fn, state=state)
+    assert result is not None
+    assert result.ok is True
+    assert called["open_app"] is True
+    assert sent[-1]["type"] == "confirm_result"
+    assert sent[-1]["ok"] is True
+
+
+def test_pending_action_cancel_flow(monkeypatch):
+    called = {"open_app": False}
+
+    def fake_open_app(_):
+        called["open_app"] = True
+
+    monkeypatch.setattr("actions.dispatcher.open_app", fake_open_app)
+
+    state = JarvisState()
+    sent = []
+
+    def send_fn(payload):
+        sent.append(payload)
+
+    action = ActionRequest(
+        action_id="action-5",
+        type="open_app",
+        data={"app_name": "Notas"},
+        provider="cloud",
+        requires_confirm=False,
+        risk="low",
+        summary="",
+    )
+    apply_classification(action)
+    blocked = dispatch_action(action, send_fn=send_fn, state=state)
+    assert blocked.ok is False
+
+    result = cancel_pending_action(send_fn=send_fn, state=state)
+    assert result is not None
+    assert result.ok is False
+    assert called["open_app"] is False
+    assert sent[-1]["type"] == "confirm_result"
+    assert sent[-1]["ok"] is False

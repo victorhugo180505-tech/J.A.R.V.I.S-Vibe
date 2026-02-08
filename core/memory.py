@@ -12,3 +12,7 @@ def add_message(role, content):
 
 def get_conversation():
     return conversation.copy()
+
+
+def clear_conversation():
+    conversation.clear()

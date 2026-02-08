@@ -3,6 +3,10 @@ import time
 from actions.open_app import open_app
 from actions.open_url import open_url
 from core.actions_contract import ActionRequest, ActionResult, action_request_from_dict
+from core.memory import clear_conversation
+
+
+_PENDING_ACTION: ActionRequest | None = None
 
 
 def _is_confirmed(action: ActionRequest) -> bool:
@@ -29,23 +33,24 @@ def _emit_confirm(send_fn, action: ActionRequest) -> None:
     })
 
 
-def dispatch_action(action: ActionRequest | dict, *, send_fn=None, state=None) -> ActionResult:
-    if isinstance(action, dict):
-        action = action_request_from_dict(action)
+def _emit_confirm_result(send_fn, action: ActionRequest, ok: bool) -> None:
+    if not send_fn:
+        return
+    send_fn({
+        "type": "confirm_result",
+        "action_id": action.action_id,
+        "ok": ok,
+    })
 
-    if action.requires_confirm and not _is_confirmed(action):
-        if state is not None:
-            state.set_conversation_state("CONFIRMING")
-        _emit_confirm(send_fn, action)
-        return ActionResult(
-            action_id=action.action_id,
-            ok=False,
-            output=None,
-            error="confirmation_required",
-            provider=action.provider,
-            ts=time.time(),
-        )
 
+def _set_post_confirm_state(state) -> None:
+    if state is None:
+        return
+    next_state = "LISTENING" if getattr(state, "mic_enabled", False) else "IDLE"
+    state.set_conversation_state(next_state)
+
+
+def _execute_action(action: ActionRequest) -> ActionResult:
     action_type = action.type
     data = action.data
 
@@ -106,4 +111,66 @@ def dispatch_action(action: ActionRequest | dict, *, send_fn=None, state=None) -
             provider=action.provider,
             ts=time.time(),
         )
+    if action_type == "reset_memory":
+        clear_conversation()
+        return ActionResult(
+            action_id=action.action_id,
+            ok=True,
+            output="Memoria reiniciada.",
+            error=None,
+            provider=action.provider,
+            ts=time.time(),
+        )
     raise ValueError(f"Acción desconocida: {action_type}")
+
+
+def confirm_pending_action(*, send_fn=None, state=None) -> ActionResult | None:
+    global _PENDING_ACTION
+    if _PENDING_ACTION is None:
+        return None
+    action = _PENDING_ACTION
+    _PENDING_ACTION = None
+    result = _execute_action(action)
+    _emit_confirm_result(send_fn, action, result.ok)
+    _set_post_confirm_state(state)
+    return result
+
+
+def cancel_pending_action(*, send_fn=None, state=None) -> ActionResult | None:
+    global _PENDING_ACTION
+    if _PENDING_ACTION is None:
+        return None
+    action = _PENDING_ACTION
+    _PENDING_ACTION = None
+    _emit_confirm_result(send_fn, action, False)
+    _set_post_confirm_state(state)
+    return ActionResult(
+        action_id=action.action_id,
+        ok=False,
+        output=None,
+        error="cancelled",
+        provider=action.provider,
+        ts=time.time(),
+    )
+
+
+def dispatch_action(action: ActionRequest | dict, *, send_fn=None, state=None) -> ActionResult:
+    global _PENDING_ACTION
+    if isinstance(action, dict):
+        action = action_request_from_dict(action)
+
+    if action.requires_confirm and not _is_confirmed(action):
+        _PENDING_ACTION = action
+        if state is not None:
+            state.set_conversation_state("CONFIRMING")
+        _emit_confirm(send_fn, action)
+        return ActionResult(
+            action_id=action.action_id,
+            ok=False,
+            output=None,
+            error="confirmation_required",
+            provider=action.provider,
+            ts=time.time(),
+        )
+
+    return _execute_action(action)
