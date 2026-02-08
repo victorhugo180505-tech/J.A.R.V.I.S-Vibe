@@ -168,6 +168,10 @@ def cancel_pending_action(*, send_fn=None, state=None) -> ActionResult | None:
     )
 
 
+def has_pending_action() -> bool:
+    return _PENDING_ACTION is not None
+
+
 def dispatch_action(action: ActionRequest | dict, *, send_fn=None, state=None) -> ActionResult:
     global _PENDING_ACTION
     if isinstance(action, dict):

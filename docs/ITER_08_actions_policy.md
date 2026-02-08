@@ -26,8 +26,8 @@ Cuando una acción se bloquea por política se emite:
 ```
 
 Para decidir:
-- Escribe **"confirmar"** o **"confirm"** → ejecuta la acción pendiente.
-- Escribe **"cancelar"** o **"cancel"** → cancela la acción pendiente.
+- Escribe **"confirmar"**, **"confirm"**, **"sí"**, **"si"**, **"ok"** o **"vale"** → ejecuta la acción pendiente.
+- Escribe **"cancelar"**, **"cancel"**, **"no"** o **"negativo"** → cancela la acción pendiente.
 
 ## Intents locales (sin LLM)
 
@@ -37,6 +37,16 @@ para disparar el flujo de confirmación (sin pasar por el LLM):
 - "borrar memoria" / "borra memoria" / "delete_memory" / "reset_memory" -> `reset_memory`
 - "screenshare_toggle" / "compartir pantalla" -> `screenshare_toggle`
 - "audio_share_toggle" / "compartir audio" -> `audio_share_toggle`
+
+## Ejemplo: delete_memory + confirmación verbal
+
+1) Usuario: "delete_memory"
+2) Jarvis: "Esta acción es sensible. ¿Confirmas (confirmar/sí) o cancelas (cancelar/no)?"
+3) Usuario: "sí"
+4) WS:
+```json
+{"type":"confirm_result","action_id":"action-...","ok":true}
+```
 
 Resultado por WS:
 

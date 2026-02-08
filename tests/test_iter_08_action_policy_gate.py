@@ -7,10 +7,12 @@ if str(REPO_ROOT) not in sys.path:
 
 from actions.dispatcher import cancel_pending_action, confirm_pending_action, dispatch_action
 from core.actions_contract import ActionRequest
+from core.confirm_prompt import classify_confirm_token, speak_system_prompt
 from core.local_intents import detect_intent
 from core.memory import add_message, clear_conversation, get_conversation
 from core.policy_gate import classify_action
 from core.state import JarvisState
+from core.conversation_flow import handle_tts_ended
 
 
 def apply_classification(action: ActionRequest) -> None:
@@ -227,18 +229,43 @@ def test_placeholder_action_returns_not_implemented():
 
 def test_local_intent_creates_confirm_flow():
     sent = []
+    spoken = {"text": None}
 
     def send_fn(payload):
         sent.append(payload)
+
+    def set_last(text):
+        spoken["text"] = text
+
+    def emit_subtitle(role, text):
+        spoken["subtitle"] = (role, text)
+
+    def send_emotion(emotion):
+        spoken["emotion"] = emotion
+
+    def send_tts(text, emotion):
+        spoken["tts"] = (text, emotion)
 
     intent_action = detect_intent("borrar memoria")
     assert intent_action is not None
     apply_classification(intent_action)
 
-    blocked = dispatch_action(intent_action, send_fn=send_fn, state=JarvisState())
+    state = JarvisState()
+    blocked = dispatch_action(intent_action, send_fn=send_fn, state=state)
     assert blocked.ok is False
     assert blocked.error == "confirm_required"
     assert sent[-1]["type"] == "confirm"
+    assert state.conversation_state == "CONFIRMING"
+
+    speak_system_prompt(
+        "Esta acción es sensible. ¿Confirmas (confirmar/sí) o cancelas (cancelar/no)?",
+        "neutral",
+        set_last_utterance_fn=set_last,
+        emit_subtitle_fn=emit_subtitle,
+        send_emotion_fn=send_emotion,
+        send_tts_fn=send_tts,
+    )
+    assert spoken["tts"] is not None
 
 
 def test_local_intent_confirm_executes_reset_memory():
@@ -277,3 +304,50 @@ def test_screenshare_placeholder_confirm_not_implemented():
     assert result is not None
     assert result.ok is False
     assert result.error == "not_implemented"
+
+
+def test_confirm_cancel_token_variants():
+    assert classify_confirm_token("sí") == "confirm"
+    assert classify_confirm_token("si") == "confirm"
+    assert classify_confirm_token("ok!") == "confirm"
+    assert classify_confirm_token("vale") == "confirm"
+    assert classify_confirm_token("cancelar...") == "cancel"
+    assert classify_confirm_token("no") == "cancel"
+    assert classify_confirm_token("negativo") == "cancel"
+
+
+def test_speak_system_prompt_calls_tts_and_subtitle():
+    calls = {"subtitle": None, "emotion": None, "tts": None, "last": None}
+
+    def set_last(text):
+        calls["last"] = text
+
+    def emit_subtitle(role, text):
+        calls["subtitle"] = (role, text)
+
+    def send_emotion(emotion):
+        calls["emotion"] = emotion
+
+    def send_tts(text, emotion):
+        calls["tts"] = (text, emotion)
+
+    speak_system_prompt(
+        "Confirma la acción.",
+        "neutral",
+        set_last_utterance_fn=set_last,
+        emit_subtitle_fn=emit_subtitle,
+        send_emotion_fn=send_emotion,
+        send_tts_fn=send_tts,
+    )
+
+    assert calls["last"] == "Confirma la acción."
+    assert calls["subtitle"] == ("jarvis", "Confirma la acción.")
+    assert calls["emotion"] == "neutral"
+    assert calls["tts"] == ("Confirma la acción.", "neutral")
+
+
+def test_tts_ended_keeps_confirming_when_pending():
+    state = JarvisState()
+    state.set_conversation_state("SPEAKING")
+    handle_tts_ended(state, pending_action=True)
+    assert state.conversation_state == "CONFIRMING"
