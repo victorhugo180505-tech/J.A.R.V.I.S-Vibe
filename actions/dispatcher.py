@@ -122,7 +122,7 @@ def _execute_action(action: ActionRequest) -> ActionResult:
         return ActionResult(
             action_id=action.action_id,
             ok=False,
-            output="Aún no implementado (pendiente OpenClaw/LiveKit).",
+            output="Pendiente integrar OpenClaw/LiveKit.",
             error="not_implemented",
             provider=action.provider,
             ts=time.time(),

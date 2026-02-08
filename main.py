@@ -393,17 +393,67 @@ def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
     if token == "confirm":
         result = confirm_pending_action(send_fn=avatar.send_json, state=state)
         if result is None:
+            speak_system_prompt(
+                "No hay ninguna acción pendiente.",
+                "neutral",
+                set_last_utterance_fn=state.set_last_jarvis_utterance,
+                emit_subtitle_fn=lambda role, text: emit_subtitle(state, avatar.send_json, role, text),
+                send_emotion_fn=avatar.send_emotion,
+                send_tts_fn=_send_system_tts,
+            )
             _safe_print("ℹ️ No hay acción pendiente para confirmar.")
         elif result.ok:
+            speak_system_prompt(
+                f"Acción confirmada. {result.output or ''}".strip(),
+                "neutral",
+                set_last_utterance_fn=state.set_last_jarvis_utterance,
+                emit_subtitle_fn=lambda role, text: emit_subtitle(state, avatar.send_json, role, text),
+                send_emotion_fn=avatar.send_emotion,
+                send_tts_fn=_send_system_tts,
+            )
             _safe_print("✔ " + str(result.output))
+        elif result.error == "not_implemented":
+            speak_system_prompt(
+                "Confirmado, pero aún no está implementado.",
+                "neutral",
+                set_last_utterance_fn=state.set_last_jarvis_utterance,
+                emit_subtitle_fn=lambda role, text: emit_subtitle(state, avatar.send_json, role, text),
+                send_emotion_fn=avatar.send_emotion,
+                send_tts_fn=_send_system_tts,
+            )
+            _safe_print("⚠️ Acción no implementada.")
         else:
+            speak_system_prompt(
+                "No se pudo completar la acción.",
+                "neutral",
+                set_last_utterance_fn=state.set_last_jarvis_utterance,
+                emit_subtitle_fn=lambda role, text: emit_subtitle(state, avatar.send_json, role, text),
+                send_emotion_fn=avatar.send_emotion,
+                send_tts_fn=_send_system_tts,
+            )
             _safe_print("⚠️ Acción no ejecutada: " + str(result.error))
         return
     if token == "cancel":
         result = cancel_pending_action(send_fn=avatar.send_json, state=state)
         if result is None:
+            speak_system_prompt(
+                "No hay ninguna acción pendiente.",
+                "neutral",
+                set_last_utterance_fn=state.set_last_jarvis_utterance,
+                emit_subtitle_fn=lambda role, text: emit_subtitle(state, avatar.send_json, role, text),
+                send_emotion_fn=avatar.send_emotion,
+                send_tts_fn=_send_system_tts,
+            )
             _safe_print("ℹ️ No hay acción pendiente para cancelar.")
         else:
+            speak_system_prompt(
+                "Acción cancelada.",
+                "neutral",
+                set_last_utterance_fn=state.set_last_jarvis_utterance,
+                emit_subtitle_fn=lambda role, text: emit_subtitle(state, avatar.send_json, role, text),
+                send_emotion_fn=avatar.send_emotion,
+                send_tts_fn=_send_system_tts,
+            )
             _safe_print("⚠️ Acción cancelada.")
         return
     user_text = normalize_text(user_text)

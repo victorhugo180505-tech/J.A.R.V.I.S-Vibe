@@ -306,6 +306,20 @@ def test_screenshare_placeholder_confirm_not_implemented():
     assert result.error == "not_implemented"
 
 
+def test_local_intent_github_write_detected():
+    action = detect_intent("crear issue en github")
+    assert action is not None
+    assert action.type == "github_write"
+    assert action.data.get("raw")
+
+
+def test_local_intent_calendar_write_detected():
+    action = detect_intent("agrega un evento al calendario")
+    assert action is not None
+    assert action.type == "calendar_write"
+    assert action.data.get("raw")
+
+
 def test_confirm_cancel_token_variants():
     assert classify_confirm_token("sí") == "confirm"
     assert classify_confirm_token("si") == "confirm"
@@ -314,6 +328,42 @@ def test_confirm_cancel_token_variants():
     assert classify_confirm_token("cancelar...") == "cancel"
     assert classify_confirm_token("no") == "cancel"
     assert classify_confirm_token("negativo") == "cancel"
+
+
+def test_confirm_cancel_speak_messages():
+    calls = {"tts": []}
+
+    def set_last(_text):
+        return None
+
+    def emit_subtitle(_role, _text):
+        return None
+
+    def send_emotion(_emotion):
+        return None
+
+    def send_tts(text, emotion):
+        calls["tts"].append((text, emotion))
+
+    speak_system_prompt(
+        "Acción confirmada. Listo.",
+        "neutral",
+        set_last_utterance_fn=set_last,
+        emit_subtitle_fn=emit_subtitle,
+        send_emotion_fn=send_emotion,
+        send_tts_fn=send_tts,
+    )
+    speak_system_prompt(
+        "Acción cancelada.",
+        "neutral",
+        set_last_utterance_fn=set_last,
+        emit_subtitle_fn=emit_subtitle,
+        send_emotion_fn=send_emotion,
+        send_tts_fn=send_tts,
+    )
+
+    assert calls["tts"][0][0].startswith("Acción confirmada")
+    assert calls["tts"][1][0] == "Acción cancelada."
 
 
 def test_speak_system_prompt_calls_tts_and_subtitle():

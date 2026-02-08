@@ -37,6 +37,8 @@ para disparar el flujo de confirmación (sin pasar por el LLM):
 - "borrar memoria" / "borra memoria" / "delete_memory" / "reset_memory" -> `reset_memory`
 - "screenshare_toggle" / "compartir pantalla" -> `screenshare_toggle`
 - "audio_share_toggle" / "compartir audio" -> `audio_share_toggle`
+- texto que menciona "github" y "issue"/"repo" -> `github_write`
+- texto que menciona "calendario"/"evento" -> `calendar_write`
 
 ## Ejemplo: delete_memory + confirmación verbal
 
@@ -46,6 +48,12 @@ para disparar el flujo de confirmación (sin pasar por el LLM):
 4) WS:
 ```json
 {"type":"confirm_result","action_id":"action-...","ok":true}
+```
+
+Si no está implementado:
+
+```json
+{"type":"confirm_result","action_id":"action-...","ok":false,"reason":"not_implemented"}
 ```
 
 Resultado por WS:
@@ -110,6 +118,6 @@ Respuesta cuando se confirma:
   "action_id": "action-1712345678903",
   "ok": false,
   "error": "not_implemented",
-  "output": "Aún no implementado (pendiente OpenClaw/LiveKit)."
+  "output": "Pendiente integrar OpenClaw/LiveKit."
 }
 ```
