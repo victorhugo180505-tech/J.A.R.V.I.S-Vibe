@@ -29,6 +29,15 @@ Para decidir:
 - Escribe **"confirmar"** o **"confirm"** → ejecuta la acción pendiente.
 - Escribe **"cancelar"** o **"cancel"** → cancela la acción pendiente.
 
+## Intents locales (sin LLM)
+
+Si el texto del usuario coincide con alguno de estos intents, se crea una acción local
+para disparar el flujo de confirmación (sin pasar por el LLM):
+
+- "borrar memoria" / "borra memoria" / "delete_memory" / "reset_memory" -> `reset_memory`
+- "screenshare_toggle" / "compartir pantalla" -> `screenshare_toggle`
+- "audio_share_toggle" / "compartir audio" -> `audio_share_toggle`
+
 Resultado por WS:
 
 ```json

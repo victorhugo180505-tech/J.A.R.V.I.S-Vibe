@@ -7,6 +7,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from actions.dispatcher import cancel_pending_action, confirm_pending_action, dispatch_action
 from core.actions_contract import ActionRequest
+from core.local_intents import detect_intent
 from core.memory import add_message, clear_conversation, get_conversation
 from core.policy_gate import classify_action
 from core.state import JarvisState
@@ -217,6 +218,60 @@ def test_placeholder_action_returns_not_implemented():
     blocked = dispatch_action(action, send_fn=send_fn, state=JarvisState())
     assert blocked.ok is False
     assert blocked.error == "confirm_required"
+
+    result = confirm_pending_action(send_fn=send_fn, state=JarvisState())
+    assert result is not None
+    assert result.ok is False
+    assert result.error == "not_implemented"
+
+
+def test_local_intent_creates_confirm_flow():
+    sent = []
+
+    def send_fn(payload):
+        sent.append(payload)
+
+    intent_action = detect_intent("borrar memoria")
+    assert intent_action is not None
+    apply_classification(intent_action)
+
+    blocked = dispatch_action(intent_action, send_fn=send_fn, state=JarvisState())
+    assert blocked.ok is False
+    assert blocked.error == "confirm_required"
+    assert sent[-1]["type"] == "confirm"
+
+
+def test_local_intent_confirm_executes_reset_memory():
+    clear_conversation()
+    add_message("user", "hola")
+    add_message("assistant", "ok")
+
+    sent = []
+
+    def send_fn(payload):
+        sent.append(payload)
+
+    intent_action = detect_intent("reset_memory")
+    assert intent_action is not None
+    apply_classification(intent_action)
+    dispatch_action(intent_action, send_fn=send_fn, state=JarvisState())
+
+    result = confirm_pending_action(send_fn=send_fn, state=JarvisState())
+    assert result is not None
+    assert result.ok is True
+    assert get_conversation() == []
+
+
+def test_screenshare_placeholder_confirm_not_implemented():
+    sent = []
+
+    def send_fn(payload):
+        sent.append(payload)
+
+    intent_action = detect_intent("compartir pantalla")
+    assert intent_action is not None
+    apply_classification(intent_action)
+    dispatch_action(intent_action, send_fn=send_fn, state=JarvisState())
 
     result = confirm_pending_action(send_fn=send_fn, state=JarvisState())
     assert result is not None

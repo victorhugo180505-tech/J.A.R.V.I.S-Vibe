@@ -143,6 +143,7 @@ def confirm_pending_action(*, send_fn=None, state=None) -> ActionResult | None:
         return None
     action = _PENDING_ACTION
     _PENDING_ACTION = None
+    action.data["confirmed"] = True
     result = _execute_action(action)
     _emit_confirm_result(send_fn, action, result.ok, reason=None if result.ok else result.error)
     _set_post_confirm_state(state)

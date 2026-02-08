@@ -26,6 +26,7 @@ import re
 import threading
 import time
 from core.actions_contract import action_request_from_dict
+from core.local_intents import detect_intent
 from core.memory import add_message, get_conversation
 from core.policy_gate import classify_action
 from core.parser import parse_response
@@ -361,6 +362,25 @@ def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
         return
     user_text = normalize_text(user_text)
     if not user_text:
+        return
+
+    local_action = detect_intent(user_text)
+    if local_action:
+        if emit_user_subtitle:
+            emit_subtitle(state, avatar.send_json, "user", user_text)
+        apply_thinking(state)
+        classification = classify_action(local_action)
+        local_action.requires_confirm = bool(classification["requires_confirm"])
+        local_action.risk = str(classification["risk"])
+        local_action.summary = str(classification["summary"])
+
+        result = dispatch_action(local_action, send_fn=avatar.send_json, state=state)
+        if result.ok:
+            avatar.send_say(result.output or "Listo.", "neutral")
+            _safe_print("✔ " + str(result.output))
+        else:
+            avatar.send_say("Necesito confirmación. Responde 'confirmar' o 'cancelar'.", "neutral")
+            _safe_print("⚠️ Acción local bloqueada: " + str(result.error))
         return
 
     task_type = detect_task_type(user_text)
