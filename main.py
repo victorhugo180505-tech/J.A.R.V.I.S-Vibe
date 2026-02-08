@@ -116,6 +116,16 @@ Usar SOLO para música (si el usuario pide música y spotify está permitido).
 CONFIRMACIÓN (IMPORTANTE):
 - Algunas acciones pueden requerir confirmación por seguridad.
 - Si el sistema te pide confirmación (por ejemplo te llega una pregunta de confirmar), responde con "speech" pidiendo "confirmar" o "cancelar" y action.type="none".
+
+Acciones sensibles (requieren confirmación):
+SENSITIVE_TYPES = {
+    "delete_memory",
+    "reset_memory",
+    "calendar_write",
+    "github_write",
+    "screenshare_toggle",
+    "audio_share_toggle",
+}
 """
 
 SUPPORTED_EMOTIONS = {
