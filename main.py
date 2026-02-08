@@ -25,7 +25,9 @@ import queue
 import re
 import threading
 import time
+from core.actions_contract import action_request_from_dict
 from core.memory import add_message, get_conversation
+from core.policy_gate import classify_action
 from core.parser import parse_response
 from actions.dispatcher import dispatch_action
 
@@ -392,8 +394,17 @@ def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
 
     # 3) acción windows
     try:
-        result = dispatch_action(data["action"])
-        _safe_print("✔ " + str(result))
+        action_request = action_request_from_dict(data["action"])
+        classification = classify_action(action_request)
+        action_request.requires_confirm = bool(classification["requires_confirm"])
+        action_request.risk = str(classification["risk"])
+        action_request.summary = str(classification["summary"])
+
+        result = dispatch_action(action_request, send_fn=avatar.send_json, state=state)
+        if result.ok:
+            _safe_print("✔ " + str(result.output))
+        else:
+            _safe_print("⚠️ Acción no ejecutada: " + str(result.error))
     except Exception as e:
         _safe_print("⚠️ Error ejecutando acción: " + str(e))
 
