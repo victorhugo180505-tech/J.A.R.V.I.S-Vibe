@@ -22,32 +22,29 @@ def _emit_confirm(send_fn, action: ActionRequest) -> None:
     send_fn({
         "type": "confirm",
         "action_id": action.action_id,
-        "action": {
-            "type": action.type,
-            "data": action.data,
-            "provider": action.provider,
-        },
-        "requires_confirm": action.requires_confirm,
-        "risk": action.risk,
+        "action_type": action.type,
         "summary": action.summary,
+        "risk": action.risk,
     })
 
 
-def _emit_confirm_result(send_fn, action: ActionRequest, ok: bool) -> None:
+def _emit_confirm_result(send_fn, action: ActionRequest, ok: bool, reason: str | None = None) -> None:
     if not send_fn:
         return
-    send_fn({
+    payload = {
         "type": "confirm_result",
         "action_id": action.action_id,
         "ok": ok,
-    })
+    }
+    if reason:
+        payload["reason"] = reason
+    send_fn(payload)
 
 
 def _set_post_confirm_state(state) -> None:
     if state is None:
         return
-    next_state = "LISTENING" if getattr(state, "mic_enabled", False) else "IDLE"
-    state.set_conversation_state(next_state)
+    state.set_conversation_state("IDLE")
 
 
 def _execute_action(action: ActionRequest) -> ActionResult:
@@ -111,7 +108,7 @@ def _execute_action(action: ActionRequest) -> ActionResult:
             provider=action.provider,
             ts=time.time(),
         )
-    if action_type == "reset_memory":
+    if action_type in {"reset_memory", "delete_memory"}:
         clear_conversation()
         return ActionResult(
             action_id=action.action_id,
@@ -121,7 +118,23 @@ def _execute_action(action: ActionRequest) -> ActionResult:
             provider=action.provider,
             ts=time.time(),
         )
-    raise ValueError(f"Acción desconocida: {action_type}")
+    if action_type in {"calendar_write", "github_write", "screenshare_toggle", "audio_share_toggle"}:
+        return ActionResult(
+            action_id=action.action_id,
+            ok=False,
+            output="Aún no implementado (pendiente OpenClaw/LiveKit).",
+            error="not_implemented",
+            provider=action.provider,
+            ts=time.time(),
+        )
+    return ActionResult(
+        action_id=action.action_id,
+        ok=False,
+        output=None,
+        error=f"unknown_action:{action_type}",
+        provider=action.provider,
+        ts=time.time(),
+    )
 
 
 def confirm_pending_action(*, send_fn=None, state=None) -> ActionResult | None:
@@ -131,7 +144,7 @@ def confirm_pending_action(*, send_fn=None, state=None) -> ActionResult | None:
     action = _PENDING_ACTION
     _PENDING_ACTION = None
     result = _execute_action(action)
-    _emit_confirm_result(send_fn, action, result.ok)
+    _emit_confirm_result(send_fn, action, result.ok, reason=None if result.ok else result.error)
     _set_post_confirm_state(state)
     return result
 
@@ -142,13 +155,13 @@ def cancel_pending_action(*, send_fn=None, state=None) -> ActionResult | None:
         return None
     action = _PENDING_ACTION
     _PENDING_ACTION = None
-    _emit_confirm_result(send_fn, action, False)
+    _emit_confirm_result(send_fn, action, False, reason="canceled")
     _set_post_confirm_state(state)
     return ActionResult(
         action_id=action.action_id,
         ok=False,
         output=None,
-        error="cancelled",
+        error="canceled",
         provider=action.provider,
         ts=time.time(),
     )
@@ -168,7 +181,7 @@ def dispatch_action(action: ActionRequest | dict, *, send_fn=None, state=None) -
             action_id=action.action_id,
             ok=False,
             output=None,
-            error="confirmation_required",
+            error="confirm_required",
             provider=action.provider,
             ts=time.time(),
         )

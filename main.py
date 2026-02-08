@@ -67,22 +67,12 @@ Formato obligatorio:
   "speech": "Texto breve que dirás al usuario",
   "emotion": "neutral | happy | sad | relaxed | surprised | angry | sarcastic | thinking | confident | tired | smug | annoyed | scared",
   "action": {
-    "type": "none | open_app | open_url | youtube_control | play_spotify",
+    "type": "none | open_app | open_url | youtube_control | play_spotify | reset_memory | delete_memory | calendar_write | github_write | screenshare_toggle | audio_share_toggle",
     "data": {}
   }
 }
 
 === ACCIONES DISPONIBLES ===
-
-Acciones sensibles (requieren confirmación):
-SENSITIVE_TYPES = {
-    "delete_memory",
-    "reset_memory",
-    "calendar_write",
-    "github_write",
-    "screenshare_toggle",
-    "audio_share_toggle",
-}
 
 1) open_app
 data: { "app_name": "CANONICAL_NAME" }
@@ -114,8 +104,28 @@ data:
 4) play_spotify
 Usar SOLO para música (si el usuario pide música y spotify está permitido).
 
+5) reset_memory
+data: {}
+
+6) delete_memory
+Alias de reset_memory.
+
+7) calendar_write
+data: { "intent": "..." }
+
+8) github_write
+data: { "intent": "..." }
+
+9) screenshare_toggle
+data: { "intent": "..." }
+
+10) audio_share_toggle
+data: { "intent": "..." }
+
 === REGLAS IMPORTANTES ===
 - Si el usuario menciona video/youtube/reproducción/pausa/volumen -> youtube_control
+- Si el usuario dice "borra memoria" o "delete_memory" -> action.type="reset_memory" (o "delete_memory") y speech breve.
+- Si el usuario pide github/calendar write -> action.type="github_write"/"calendar_write" con data mínimo {"intent":"..."}.
 - Si el usuario pregunta "qué puedes hacer" o "qué apps están permitidas":
   - Responde en speech con una lista breve de acciones y apps permitidas.
   - action.type="none"
@@ -128,14 +138,12 @@ CONFIRMACIÓN (IMPORTANTE):
 - Si el sistema te pide confirmación (por ejemplo te llega una pregunta de confirmar), responde con "speech" pidiendo "confirmar" o "cancelar" y action.type="none".
 
 Acciones sensibles (requieren confirmación):
-SENSITIVE_TYPES = {
-    "delete_memory",
-    "reset_memory",
-    "calendar_write",
-    "github_write",
-    "screenshare_toggle",
-    "audio_share_toggle",
-}
+- delete_memory
+- reset_memory
+- calendar_write
+- github_write
+- screenshare_toggle
+- audio_share_toggle
 """
 
 SUPPORTED_EMOTIONS = {

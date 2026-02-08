@@ -7,6 +7,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from actions.dispatcher import cancel_pending_action, confirm_pending_action, dispatch_action
 from core.actions_contract import ActionRequest
+from core.memory import add_message, clear_conversation, get_conversation
 from core.policy_gate import classify_action
 from core.state import JarvisState
 
@@ -61,10 +62,11 @@ def test_sensitive_action_without_confirm_blocks(monkeypatch):
     result = dispatch_action(action, send_fn=send_fn, state=state)
 
     assert result.ok is False
-    assert result.error == "confirmation_required"
+    assert result.error == "confirm_required"
     assert called["open_app"] is False
     assert state.conversation_state == "CONFIRMING"
     assert sent and sent[0]["type"] == "confirm"
+    assert sent[0]["action_type"] == "open_app"
 
 
 def test_sensitive_action_with_confirm_executes(monkeypatch):
@@ -159,3 +161,64 @@ def test_pending_action_cancel_flow(monkeypatch):
     assert called["open_app"] is False
     assert sent[-1]["type"] == "confirm_result"
     assert sent[-1]["ok"] is False
+    assert sent[-1]["reason"] == "canceled"
+
+
+def test_reset_memory_confirm_flow():
+    clear_conversation()
+    add_message("user", "hola")
+    add_message("assistant", "ok")
+    assert get_conversation()
+
+    sent = []
+
+    def send_fn(payload):
+        sent.append(payload)
+
+    action = ActionRequest(
+        action_id="action-6",
+        type="reset_memory",
+        data={},
+        provider="local",
+        requires_confirm=False,
+        risk="low",
+        summary="",
+    )
+    apply_classification(action)
+    blocked = dispatch_action(action, send_fn=send_fn, state=JarvisState())
+    assert blocked.ok is False
+    assert blocked.error == "confirm_required"
+    assert sent[-1]["type"] == "confirm"
+
+    result = confirm_pending_action(send_fn=send_fn, state=JarvisState())
+    assert result is not None
+    assert result.ok is True
+    assert get_conversation() == []
+    assert sent[-1]["type"] == "confirm_result"
+    assert sent[-1]["ok"] is True
+
+
+def test_placeholder_action_returns_not_implemented():
+    sent = []
+
+    def send_fn(payload):
+        sent.append(payload)
+
+    action = ActionRequest(
+        action_id="action-7",
+        type="github_write",
+        data={"intent": "crear issue"},
+        provider="local",
+        requires_confirm=False,
+        risk="low",
+        summary="",
+    )
+    apply_classification(action)
+    blocked = dispatch_action(action, send_fn=send_fn, state=JarvisState())
+    assert blocked.ok is False
+    assert blocked.error == "confirm_required"
+
+    result = confirm_pending_action(send_fn=send_fn, state=JarvisState())
+    assert result is not None
+    assert result.ok is False
+    assert result.error == "not_implemented"

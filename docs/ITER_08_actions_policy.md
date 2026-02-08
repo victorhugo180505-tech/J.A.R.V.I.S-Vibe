@@ -19,14 +19,9 @@ Cuando una acción se bloquea por política se emite:
 {
   "type": "confirm",
   "action_id": "action-1712345678901",
-  "action": {
-    "type": "reset_memory",
-    "data": {},
-    "provider": "local"
-  },
-  "requires_confirm": true,
-  "risk": "high",
-  "summary": "reset_memory (local)"
+  "action_type": "reset_memory",
+  "summary": "reset_memory (local)",
+  "risk": "high"
 }
 ```
 
@@ -40,6 +35,12 @@ Resultado por WS:
 {"type":"confirm_result","action_id":"action-1712345678901","ok":true}
 ```
 
+Si se cancela:
+
+```json
+{"type":"confirm_result","action_id":"action-1712345678901","ok":false,"reason":"canceled"}
+```
+
 ## reset_memory (sensible)
 
 Ejemplo de acción:
@@ -50,5 +51,46 @@ Ejemplo de acción:
   "type": "reset_memory",
   "data": {},
   "provider": "local"
+}
+```
+
+## delete_memory (alias)
+
+```json
+{
+  "action_id": "action-1712345678902",
+  "type": "delete_memory",
+  "data": {},
+  "provider": "local"
+}
+```
+
+## Acciones placeholder (requieren confirmación)
+
+Tipos:
+- `calendar_write`
+- `github_write`
+- `screenshare_toggle`
+- `audio_share_toggle`
+
+Ejemplo (github_write):
+
+```json
+{
+  "action_id": "action-1712345678903",
+  "type": "github_write",
+  "data": {"intent": "crear issue"},
+  "provider": "local"
+}
+```
+
+Respuesta cuando se confirma:
+
+```json
+{
+  "action_id": "action-1712345678903",
+  "ok": false,
+  "error": "not_implemented",
+  "output": "Aún no implementado (pendiente OpenClaw/LiveKit)."
 }
 ```
