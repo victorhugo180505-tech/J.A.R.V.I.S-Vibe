@@ -81,6 +81,7 @@ class ControlServer:
                 return
 
         self._httpd = HTTPServer((self.host, self.port), Handler)
+        self.host, self.port = self._httpd.server_address[:2]
         self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
         self._thread.start()
 

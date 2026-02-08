@@ -1,6 +1,8 @@
 import json
 
-import azure.cognitiveservices.speech as speechsdk
+import pytest
+
+speechsdk = pytest.importorskip("azure.cognitiveservices.speech")
 
 from core.stt_azure import _should_dispatch_result
 
