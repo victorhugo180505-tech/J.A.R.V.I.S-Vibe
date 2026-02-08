@@ -74,6 +74,16 @@ Formato obligatorio:
 
 === ACCIONES DISPONIBLES ===
 
+Acciones sensibles (requieren confirmación):
+SENSITIVE_TYPES = {
+    "delete_memory",
+    "reset_memory",
+    "calendar_write",
+    "github_write",
+    "screenshare_toggle",
+    "audio_share_toggle",
+}
+
 1) open_app
 data: { "app_name": "CANONICAL_NAME" }
 
