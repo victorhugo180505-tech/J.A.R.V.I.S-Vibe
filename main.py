@@ -25,6 +25,7 @@ import queue
 import re
 import threading
 import time
+from datetime import datetime, timezone
 from core.actions_contract import action_request_from_dict
 from core.local_intents import detect_intent
 from core.memory import add_message, get_conversation
@@ -38,6 +39,8 @@ from actions.dispatcher import (
 )
 from core.confirm_prompt import classify_confirm_token, speak_system_prompt
 from core.transport.ws_bus import WSTransportBus
+from core.agent.night_session import NightSession
+from core.agent import tools as night_tools
 
 from jarvis_avatar_web.server.avatar_ws_client import AvatarWSClient
 from jarvis_avatar_web.server import mouse_stream_auto
@@ -391,6 +394,99 @@ def parse_or_repair_json(
 
 def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
     token = classify_confirm_token(user_text)
+    night_input = (user_text or "").strip()
+    if night_input.lower().startswith("night:") or night_input.lower().startswith("/night"):
+        objective = night_input.split(" ", 1)[1].strip() if " " in night_input else night_input.split(":", 1)[-1].strip()
+        if not objective:
+            speak_system_prompt(
+                "Necesito un objetivo para la sesión nocturna.",
+                "neutral",
+                set_last_utterance_fn=state.set_last_jarvis_utterance,
+                emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+                send_emotion_fn=bus.send_emotion,
+                send_tts_fn=_send_system_tts,
+            )
+            return
+        session = NightSession.create(objective, scope={"research_repo", "run_tests", "propose_patch"})
+        session.status = "AWAITING_CONFIRM"
+        session.plan = [
+            "Revisar el repositorio según el objetivo",
+            "Ejecutar pruebas permitidas si aplica",
+            "Generar reporte Markdown",
+        ]
+        _night_state["session"] = session
+        speak_system_prompt(
+            f"Plan listo para: {objective}. Responde 'confirmar noche' o 'cancelar noche'.",
+            "neutral",
+            set_last_utterance_fn=state.set_last_jarvis_utterance,
+            emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+            send_emotion_fn=bus.send_emotion,
+            send_tts_fn=_send_system_tts,
+        )
+        return
+    if night_input.lower() in {"confirmar noche", "confirm night"}:
+        session = _night_state.get("session")
+        if not session or session.status != "AWAITING_CONFIRM":
+            speak_system_prompt(
+                "No hay una sesión nocturna pendiente.",
+                "neutral",
+                set_last_utterance_fn=state.set_last_jarvis_utterance,
+                emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+                send_emotion_fn=bus.send_emotion,
+                send_tts_fn=_send_system_tts,
+            )
+            return
+        session.start()
+        actions_log = []
+        report_lines = [
+            f"# NightSession {session.session_id}",
+            "",
+            f"**Objetivo:** {session.objective}",
+            "",
+            "## Plan",
+        ]
+        for item in session.plan:
+            report_lines.append(f"- [ ] {item}")
+        report_lines.append("")
+        report_lines.append("## Acciones realizadas")
+        start_ts = datetime.now(timezone.utc).isoformat()
+        actions_log.append(f"- {start_ts} Inicio de sesión")
+        pytest_result = night_tools.run_pytest(["-q", "tests"])
+        actions_log.append(f"- {datetime.now(timezone.utc).isoformat()} pytest ok={pytest_result.ok}")
+        report_lines.extend(actions_log)
+        report_lines.append("")
+        report_lines.append("## Resultado pytest")
+        report_lines.append("```")
+        report_lines.append(pytest_result.output)
+        report_lines.append("```")
+        report_lines.append("")
+        report_lines.append("## Riesgos/Pendientes")
+        report_lines.append("- Pendiente revisar tareas adicionales si aplica.")
+        report_path = f"reports/nightly_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M')}_{session.session_id}.md"
+        write_result = night_tools.write_report(report_path, "\n".join(report_lines))
+        session.status = "DONE" if write_result.ok else "CANCELLED"
+        speak_system_prompt(
+            f"Sesión nocturna finalizada. Reporte: {write_result.output}",
+            "neutral",
+            set_last_utterance_fn=state.set_last_jarvis_utterance,
+            emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+            send_emotion_fn=bus.send_emotion,
+            send_tts_fn=_send_system_tts,
+        )
+        return
+    if night_input.lower() in {"cancelar noche", "cancel night"}:
+        session = _night_state.get("session")
+        if session:
+            session.cancel()
+        speak_system_prompt(
+            "Sesión nocturna cancelada.",
+            "neutral",
+            set_last_utterance_fn=state.set_last_jarvis_utterance,
+            emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+            send_emotion_fn=bus.send_emotion,
+            send_tts_fn=_send_system_tts,
+        )
+        return
     if token == "confirm":
         result = confirm_pending_action(send_fn=bus.send_confirm_result, state=state)
         if result is None:
@@ -630,6 +726,7 @@ avatar = AvatarWSClient("ws://127.0.0.1:8765")
 avatar.start()
 bus = WSTransportBus(avatar)
 tts_session_id = {"value": 0, "key": None}
+_night_state = {"session": None}
 
 def get_tts_session_id() -> int:
     return tts_session_id["value"]
