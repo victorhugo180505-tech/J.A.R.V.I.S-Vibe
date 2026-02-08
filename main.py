@@ -37,6 +37,7 @@ from actions.dispatcher import (
     has_pending_action,
 )
 from core.confirm_prompt import classify_confirm_token, speak_system_prompt
+from core.transport.ws_bus import WSTransportBus
 
 from jarvis_avatar_web.server.avatar_ws_client import AvatarWSClient
 from jarvis_avatar_web.server import mouse_stream_auto
@@ -204,7 +205,7 @@ def _send_system_tts(text: str, emotion: str) -> None:
                 emotion=emotion,
                 session_id=tts_session_key,
                 synthesize_fn=synthesize_chunk,
-                send_fn=avatar.send_raw,
+                send_fn=bus.send_raw,
                 subtitle_fn=None,
                 session_getter=get_tts_session_id,
                 session_token=session_token,
@@ -215,7 +216,7 @@ def _send_system_tts(text: str, emotion: str) -> None:
         except Exception as e:
             _safe_print("[AZURE] FAIL -> fallback say: " + repr(e))
 
-    avatar.send_say(text, emotion)
+    bus.send_say(text, emotion)
 
 def start_local_servers():
     stop_handles = {}
@@ -391,14 +392,14 @@ def parse_or_repair_json(
 def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
     token = classify_confirm_token(user_text)
     if token == "confirm":
-        result = confirm_pending_action(send_fn=avatar.send_json, state=state)
+        result = confirm_pending_action(send_fn=bus.send_confirm_result, state=state)
         if result is None:
             speak_system_prompt(
                 "No hay ninguna acción pendiente.",
                 "neutral",
                 set_last_utterance_fn=state.set_last_jarvis_utterance,
-                emit_subtitle_fn=lambda role, text: emit_subtitle(state, avatar.send_json, role, text),
-                send_emotion_fn=avatar.send_emotion,
+                emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+                send_emotion_fn=bus.send_emotion,
                 send_tts_fn=_send_system_tts,
             )
             _safe_print("ℹ️ No hay acción pendiente para confirmar.")
@@ -407,8 +408,8 @@ def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
                 f"Acción confirmada. {result.output or ''}".strip(),
                 "neutral",
                 set_last_utterance_fn=state.set_last_jarvis_utterance,
-                emit_subtitle_fn=lambda role, text: emit_subtitle(state, avatar.send_json, role, text),
-                send_emotion_fn=avatar.send_emotion,
+                emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+                send_emotion_fn=bus.send_emotion,
                 send_tts_fn=_send_system_tts,
             )
             _safe_print("✔ " + str(result.output))
@@ -417,8 +418,8 @@ def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
                 "Confirmado, pero aún no está implementado.",
                 "neutral",
                 set_last_utterance_fn=state.set_last_jarvis_utterance,
-                emit_subtitle_fn=lambda role, text: emit_subtitle(state, avatar.send_json, role, text),
-                send_emotion_fn=avatar.send_emotion,
+                emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+                send_emotion_fn=bus.send_emotion,
                 send_tts_fn=_send_system_tts,
             )
             _safe_print("⚠️ Acción no implementada.")
@@ -427,21 +428,21 @@ def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
                 "No se pudo completar la acción.",
                 "neutral",
                 set_last_utterance_fn=state.set_last_jarvis_utterance,
-                emit_subtitle_fn=lambda role, text: emit_subtitle(state, avatar.send_json, role, text),
-                send_emotion_fn=avatar.send_emotion,
+                emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+                send_emotion_fn=bus.send_emotion,
                 send_tts_fn=_send_system_tts,
             )
             _safe_print("⚠️ Acción no ejecutada: " + str(result.error))
         return
     if token == "cancel":
-        result = cancel_pending_action(send_fn=avatar.send_json, state=state)
+        result = cancel_pending_action(send_fn=bus.send_confirm_result, state=state)
         if result is None:
             speak_system_prompt(
                 "No hay ninguna acción pendiente.",
                 "neutral",
                 set_last_utterance_fn=state.set_last_jarvis_utterance,
-                emit_subtitle_fn=lambda role, text: emit_subtitle(state, avatar.send_json, role, text),
-                send_emotion_fn=avatar.send_emotion,
+                emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+                send_emotion_fn=bus.send_emotion,
                 send_tts_fn=_send_system_tts,
             )
             _safe_print("ℹ️ No hay acción pendiente para cancelar.")
@@ -450,8 +451,8 @@ def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
                 "Acción cancelada.",
                 "neutral",
                 set_last_utterance_fn=state.set_last_jarvis_utterance,
-                emit_subtitle_fn=lambda role, text: emit_subtitle(state, avatar.send_json, role, text),
-                send_emotion_fn=avatar.send_emotion,
+                emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+                send_emotion_fn=bus.send_emotion,
                 send_tts_fn=_send_system_tts,
             )
             _safe_print("⚠️ Acción cancelada.")
@@ -463,21 +464,21 @@ def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
     local_action = detect_intent(user_text)
     if local_action:
         if emit_user_subtitle:
-            emit_subtitle(state, avatar.send_json, "user", user_text)
+            emit_subtitle(state, bus.send_raw, "user", user_text)
         apply_thinking(state)
         classification = classify_action(local_action)
         local_action.requires_confirm = bool(classification["requires_confirm"])
         local_action.risk = str(classification["risk"])
         local_action.summary = str(classification["summary"])
 
-        result = dispatch_action(local_action, send_fn=avatar.send_json, state=state)
+        result = dispatch_action(local_action, send_fn=bus.send_confirm, state=state)
         if result.ok:
             speak_system_prompt(
                 result.output or "Listo.",
                 "neutral",
                 set_last_utterance_fn=state.set_last_jarvis_utterance,
-                emit_subtitle_fn=lambda role, text: emit_subtitle(state, avatar.send_json, role, text),
-                send_emotion_fn=avatar.send_emotion,
+                emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+                send_emotion_fn=bus.send_emotion,
                 send_tts_fn=_send_system_tts,
             )
             _safe_print("✔ " + str(result.output))
@@ -486,8 +487,8 @@ def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
                 "Esta acción es sensible. ¿Confirmas (confirmar/sí) o cancelas (cancelar/no)?",
                 "neutral",
                 set_last_utterance_fn=state.set_last_jarvis_utterance,
-                emit_subtitle_fn=lambda role, text: emit_subtitle(state, avatar.send_json, role, text),
-                send_emotion_fn=avatar.send_emotion,
+                emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+                send_emotion_fn=bus.send_emotion,
                 send_tts_fn=_send_system_tts,
             )
             _safe_print("⚠️ Acción local bloqueada: " + str(result.error))
@@ -496,8 +497,8 @@ def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
                 "No pude completar la acción solicitada.",
                 "neutral",
                 set_last_utterance_fn=state.set_last_jarvis_utterance,
-                emit_subtitle_fn=lambda role, text: emit_subtitle(state, avatar.send_json, role, text),
-                send_emotion_fn=avatar.send_emotion,
+                emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+                send_emotion_fn=bus.send_emotion,
                 send_tts_fn=_send_system_tts,
             )
             _safe_print("⚠️ Acción local fallida: " + str(result.error))
@@ -511,7 +512,7 @@ def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
         return
 
     if emit_user_subtitle:
-        emit_subtitle(state, avatar.send_json, "user", user_text)
+        emit_subtitle(state, bus.send_raw, "user", user_text)
     add_message("user", user_text)
     apply_thinking(state)
 
@@ -548,7 +549,7 @@ def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
     _safe_print(f"Jarvis [{task_type}] ({emo}): {speech}")
 
     # 1) mood persistente
-    avatar.send_emotion(emo)
+    bus.send_emotion(emo)
 
     # 2) TTS (Azure) -> WS type:"tts"
     if tts_text and have_azure_config():
@@ -576,7 +577,7 @@ def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
                 emotion=emo,
                 session_id=tts_session_key,
                 synthesize_fn=synthesize_chunk,
-                send_fn=avatar.send_raw,
+                send_fn=bus.send_raw,
                 subtitle_fn=None,
                 session_getter=get_tts_session_id,
                 session_token=session_token,
@@ -586,13 +587,13 @@ def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
 
         except Exception as e:
             _safe_print("[AZURE] FAIL -> fallback say: " + repr(e))
-            avatar.send_say(speech, emo)
+            bus.send_say(speech, emo)
     else:
         if not tts_text:
             _safe_print("[TTS] speech vacío -> no mando TTS.")
         elif not have_azure_config():
             _safe_print("[TTS] falta AZURE_KEY/AZURE_REGION -> fallback say.")
-        avatar.send_say(speech, emo)
+        bus.send_say(speech, emo)
 
     # 3) acción windows
     try:
@@ -602,7 +603,7 @@ def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
         action_request.risk = str(classification["risk"])
         action_request.summary = str(classification["summary"])
 
-        result = dispatch_action(action_request, send_fn=avatar.send_json, state=state)
+        result = dispatch_action(action_request, send_fn=bus.send_confirm, state=state)
         if result.ok:
             _safe_print("✔ " + str(result.output))
         else:
@@ -627,6 +628,7 @@ server_handles = start_local_servers()
 
 avatar = AvatarWSClient("ws://127.0.0.1:8765")
 avatar.start()
+bus = WSTransportBus(avatar)
 tts_session_id = {"value": 0, "key": None}
 
 def get_tts_session_id() -> int:
@@ -636,7 +638,7 @@ def cancel_tts_session() -> None:
     tts_session_id["value"] += 1
 
 def on_state_change(payload: dict) -> None:
-    avatar.send_json(payload)
+    bus.send_state(payload)
     if payload.get("conversation_state") == "LISTENING":
         cancel_tts_session()
 
