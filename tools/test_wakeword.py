@@ -2,6 +2,10 @@ import os
 import sys
 import time
 
+import pytest
+
+pytest.importorskip("openwakeword")
+
 # Asegurar que la raíz del proyecto está en sys.path
 root_dir = os.path.dirname(os.path.dirname(__file__))
 if root_dir not in sys.path:

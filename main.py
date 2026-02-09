@@ -25,9 +25,22 @@ import queue
 import re
 import threading
 import time
+from datetime import datetime, timezone
+from core.actions_contract import action_request_from_dict
+from core.local_intents import detect_intent
 from core.memory import add_message, get_conversation
+from core.policy_gate import classify_action
 from core.parser import parse_response
-from actions.dispatcher import dispatch_action
+from actions.dispatcher import (
+    cancel_pending_action,
+    confirm_pending_action,
+    dispatch_action,
+    has_pending_action,
+)
+from core.confirm_prompt import classify_confirm_token, speak_system_prompt
+from core.transport.ws_bus import WSTransportBus
+from core.agent.night_session import NightSession
+from core.agent import tools as night_tools
 
 from jarvis_avatar_web.server.avatar_ws_client import AvatarWSClient
 from jarvis_avatar_web.server import mouse_stream_auto
@@ -52,11 +65,11 @@ AZURE_VOICE = "es-MX-DaliaNeural"
 SYSTEM_PROMPT = """
 Eres JARVIS, un asistente virtual que controla una computadora con Windows.
 
-IMPORTANTE:
-- NO puedes usar teclado ni mouse.
-- NO puedes simular teclas.
-- NO puedes escribir letras para controlar aplicaciones.
-- TODA acción debe hacerse usando las acciones disponibles.
+CAPACIDADES REALES (NO INVENTAR):
+- SOLO puedes ejecutar acciones usando los tipos listados abajo.
+- Algunas acciones están restringidas por allowlist (apps permitidas).
+- NO puedes usar teclado ni mouse, NO simules teclas, NO controles GUI.
+- Si el usuario pide algo fuera de capacidades: explica la limitación y ofrece alternativas dentro de acciones.
 
 RESPONDE SIEMPRE en JSON válido, sin texto adicional.
 
@@ -65,7 +78,7 @@ Formato obligatorio:
   "speech": "Texto breve que dirás al usuario",
   "emotion": "neutral | happy | sad | relaxed | surprised | angry | sarcastic | thinking | confident | tired | smug | annoyed | scared",
   "action": {
-    "type": "none | open_app | open_url | youtube_control | play_spotify",
+    "type": "none | open_app | open_url | youtube_control | play_spotify | reset_memory | delete_memory | calendar_write | github_write | screenshare_toggle | audio_share_toggle",
     "data": {}
   }
 }
@@ -73,7 +86,20 @@ Formato obligatorio:
 === ACCIONES DISPONIBLES ===
 
 1) open_app
-data: { "app_name": "nombre de la aplicación" }
+data: { "app_name": "CANONICAL_NAME" }
+
+Apps permitidas (CANONICAL_NAME):
+- notepad
+- spotify
+
+Aliases (entrada del usuario -> CANONICAL_NAME):
+- "bloc de notas" -> notepad
+- "notas" -> notepad
+- "spotify" -> spotify
+
+Regla open_app:
+- Usa SIEMPRE el CANONICAL_NAME anterior.
+- Si el usuario pide una app que NO está en la lista permitida: action.type="none" y en speech di que no está permitida y sugiere preguntar "¿qué apps están permitidas?".
 
 2) open_url
 data: { "url": "https://..." }
@@ -87,16 +113,48 @@ data:
 }
 
 4) play_spotify
-Usar SOLO para música.
+Usar SOLO para música (si el usuario pide música y spotify está permitido).
 
-=== REGLAS ===
-- Si el usuario menciona video, youtube, reproducción, pausa, volumen → youtube_control
-- NUNCA simules teclado
-- Si no hay acción clara → type = "none"
-- No inventes acciones que no existan
-- No agregues campos extra
-- Sé conciso y natural en speech
-- Si preguntan “qué modelo usaste”, NO lo inventes: di que el router decide (general/code) y el modelo exacto se imprime en consola.
+5) reset_memory
+data: {}
+
+6) delete_memory
+Alias de reset_memory.
+
+7) calendar_write
+data: { "intent": "..." }
+
+8) github_write
+data: { "intent": "..." }
+
+9) screenshare_toggle
+data: { "intent": "..." }
+
+10) audio_share_toggle
+data: { "intent": "..." }
+
+=== REGLAS IMPORTANTES ===
+- Si el usuario menciona video/youtube/reproducción/pausa/volumen -> youtube_control
+- Si el usuario dice "borra memoria" o "delete_memory" -> action.type="reset_memory" (o "delete_memory") y speech breve.
+- Si el usuario pide github/calendar write -> action.type="github_write"/"calendar_write" con data mínimo {"intent":"..."}.
+- Si el usuario pregunta "qué puedes hacer" o "qué apps están permitidas":
+  - Responde en speech con una lista breve de acciones y apps permitidas.
+  - action.type="none"
+- NUNCA inventes acciones que no existan.
+- No agregues campos extra.
+- Sé conciso.
+
+CONFIRMACIÓN (IMPORTANTE):
+- Algunas acciones pueden requerir confirmación por seguridad.
+- Si el sistema te pide confirmación (por ejemplo te llega una pregunta de confirmar), responde con "speech" pidiendo "confirmar" o "cancelar" y action.type="none".
+
+Acciones sensibles (requieren confirmación):
+- delete_memory
+- reset_memory
+- calendar_write
+- github_write
+- screenshare_toggle
+- audio_share_toggle
 """
 
 SUPPORTED_EMOTIONS = {
@@ -122,6 +180,46 @@ def prepare_tts_text(text: str) -> str:
     text = re.sub(r"\bjarvis\b", "Yarvis", text, flags=re.IGNORECASE)
     text = re.sub(r"\bwow\b", "woooow", text, flags=re.IGNORECASE)
     return text
+
+
+def _send_system_tts(text: str, emotion: str) -> None:
+    tts_text = prepare_tts_text(text)
+    if tts_text and have_azure_config():
+        try:
+            from core.azure_tts import synthesize_tts_with_visemes
+            apply_speaking(state)
+
+            MAX_AUDIO_B64 = 900_000
+            tts_session_id["value"] += 1
+            session_token = tts_session_id["value"]
+            tts_session_key = f"{int(time.time()*1000)}-{session_token}"
+            tts_session_id["key"] = tts_session_key
+
+            def synthesize_chunk(chunk: str):
+                return synthesize_tts_with_visemes(
+                    chunk,
+                    key=AZURE_KEY,
+                    region=AZURE_REGION,
+                    voice=AZURE_VOICE,
+                )
+
+            send_tts_chunks(
+                tts_text,
+                emotion=emotion,
+                session_id=tts_session_key,
+                synthesize_fn=synthesize_chunk,
+                send_fn=bus.send_raw,
+                subtitle_fn=None,
+                session_getter=get_tts_session_id,
+                session_token=session_token,
+                max_audio_b64=MAX_AUDIO_B64,
+                log_fn=_safe_print,
+            )
+            return
+        except Exception as e:
+            _safe_print("[AZURE] FAIL -> fallback say: " + repr(e))
+
+    bus.send_say(text, emotion)
 
 def start_local_servers():
     stop_handles = {}
@@ -295,8 +393,211 @@ def parse_or_repair_json(
 # ===============================
 
 def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
+    token = classify_confirm_token(user_text)
+    night_input = (user_text or "").strip()
+    if night_input.lower().startswith("night:") or night_input.lower().startswith("/night"):
+        objective = night_input.split(" ", 1)[1].strip() if " " in night_input else night_input.split(":", 1)[-1].strip()
+        if not objective:
+            speak_system_prompt(
+                "Necesito un objetivo para la sesión nocturna.",
+                "neutral",
+                set_last_utterance_fn=state.set_last_jarvis_utterance,
+                emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+                send_emotion_fn=bus.send_emotion,
+                send_tts_fn=_send_system_tts,
+            )
+            return
+        session = NightSession.create(objective, scope={"research_repo", "run_tests", "propose_patch"})
+        session.status = "AWAITING_CONFIRM"
+        session.plan = [
+            "Revisar el repositorio según el objetivo",
+            "Ejecutar pruebas permitidas si aplica",
+            "Generar reporte Markdown",
+        ]
+        _night_state["session"] = session
+        speak_system_prompt(
+            f"Plan listo para: {objective}. Responde 'confirmar noche' o 'cancelar noche'.",
+            "neutral",
+            set_last_utterance_fn=state.set_last_jarvis_utterance,
+            emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+            send_emotion_fn=bus.send_emotion,
+            send_tts_fn=_send_system_tts,
+        )
+        return
+    if night_input.lower() in {"confirmar noche", "confirm night"}:
+        session = _night_state.get("session")
+        if not session or session.status != "AWAITING_CONFIRM":
+            speak_system_prompt(
+                "No hay una sesión nocturna pendiente.",
+                "neutral",
+                set_last_utterance_fn=state.set_last_jarvis_utterance,
+                emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+                send_emotion_fn=bus.send_emotion,
+                send_tts_fn=_send_system_tts,
+            )
+            return
+        session.start()
+        actions_log = []
+        report_lines = [
+            f"# NightSession {session.session_id}",
+            "",
+            f"**Objetivo:** {session.objective}",
+            "",
+            "## Plan",
+        ]
+        for item in session.plan:
+            report_lines.append(f"- [ ] {item}")
+        report_lines.append("")
+        report_lines.append("## Acciones realizadas")
+        start_ts = datetime.now(timezone.utc).isoformat()
+        actions_log.append(f"- {start_ts} Inicio de sesión")
+        pytest_result = night_tools.run_pytest(["-q", "tests"])
+        actions_log.append(f"- {datetime.now(timezone.utc).isoformat()} pytest ok={pytest_result.ok}")
+        report_lines.extend(actions_log)
+        report_lines.append("")
+        report_lines.append("## Resultado pytest")
+        report_lines.append("```")
+        report_lines.append(pytest_result.output)
+        report_lines.append("```")
+        report_lines.append("")
+        report_lines.append("## Riesgos/Pendientes")
+        report_lines.append("- Pendiente revisar tareas adicionales si aplica.")
+        report_path = f"reports/nightly_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M')}_{session.session_id}.md"
+        write_result = night_tools.write_report(report_path, "\n".join(report_lines))
+        session.status = "DONE" if write_result.ok else "CANCELLED"
+        speak_system_prompt(
+            f"Sesión nocturna finalizada. Reporte: {write_result.output}",
+            "neutral",
+            set_last_utterance_fn=state.set_last_jarvis_utterance,
+            emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+            send_emotion_fn=bus.send_emotion,
+            send_tts_fn=_send_system_tts,
+        )
+        return
+    if night_input.lower() in {"cancelar noche", "cancel night"}:
+        session = _night_state.get("session")
+        if session:
+            session.cancel()
+        speak_system_prompt(
+            "Sesión nocturna cancelada.",
+            "neutral",
+            set_last_utterance_fn=state.set_last_jarvis_utterance,
+            emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+            send_emotion_fn=bus.send_emotion,
+            send_tts_fn=_send_system_tts,
+        )
+        return
+    if token == "confirm":
+        result = confirm_pending_action(send_fn=bus.send_confirm_result, state=state)
+        if result is None:
+            speak_system_prompt(
+                "No hay ninguna acción pendiente.",
+                "neutral",
+                set_last_utterance_fn=state.set_last_jarvis_utterance,
+                emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+                send_emotion_fn=bus.send_emotion,
+                send_tts_fn=_send_system_tts,
+            )
+            _safe_print("ℹ️ No hay acción pendiente para confirmar.")
+        elif result.ok:
+            speak_system_prompt(
+                f"Acción confirmada. {result.output or ''}".strip(),
+                "neutral",
+                set_last_utterance_fn=state.set_last_jarvis_utterance,
+                emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+                send_emotion_fn=bus.send_emotion,
+                send_tts_fn=_send_system_tts,
+            )
+            _safe_print("✔ " + str(result.output))
+        elif result.error == "not_implemented":
+            speak_system_prompt(
+                "Confirmado, pero aún no está implementado.",
+                "neutral",
+                set_last_utterance_fn=state.set_last_jarvis_utterance,
+                emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+                send_emotion_fn=bus.send_emotion,
+                send_tts_fn=_send_system_tts,
+            )
+            _safe_print("⚠️ Acción no implementada.")
+        else:
+            speak_system_prompt(
+                "No se pudo completar la acción.",
+                "neutral",
+                set_last_utterance_fn=state.set_last_jarvis_utterance,
+                emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+                send_emotion_fn=bus.send_emotion,
+                send_tts_fn=_send_system_tts,
+            )
+            _safe_print("⚠️ Acción no ejecutada: " + str(result.error))
+        return
+    if token == "cancel":
+        result = cancel_pending_action(send_fn=bus.send_confirm_result, state=state)
+        if result is None:
+            speak_system_prompt(
+                "No hay ninguna acción pendiente.",
+                "neutral",
+                set_last_utterance_fn=state.set_last_jarvis_utterance,
+                emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+                send_emotion_fn=bus.send_emotion,
+                send_tts_fn=_send_system_tts,
+            )
+            _safe_print("ℹ️ No hay acción pendiente para cancelar.")
+        else:
+            speak_system_prompt(
+                "Acción cancelada.",
+                "neutral",
+                set_last_utterance_fn=state.set_last_jarvis_utterance,
+                emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+                send_emotion_fn=bus.send_emotion,
+                send_tts_fn=_send_system_tts,
+            )
+            _safe_print("⚠️ Acción cancelada.")
+        return
     user_text = normalize_text(user_text)
     if not user_text:
+        return
+
+    local_action = detect_intent(user_text)
+    if local_action:
+        if emit_user_subtitle:
+            emit_subtitle(state, bus.send_raw, "user", user_text)
+        apply_thinking(state)
+        classification = classify_action(local_action)
+        local_action.requires_confirm = bool(classification["requires_confirm"])
+        local_action.risk = str(classification["risk"])
+        local_action.summary = str(classification["summary"])
+
+        result = dispatch_action(local_action, send_fn=bus.send_confirm, state=state)
+        if result.ok:
+            speak_system_prompt(
+                result.output or "Listo.",
+                "neutral",
+                set_last_utterance_fn=state.set_last_jarvis_utterance,
+                emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+                send_emotion_fn=bus.send_emotion,
+                send_tts_fn=_send_system_tts,
+            )
+            _safe_print("✔ " + str(result.output))
+        elif result.error == "confirm_required":
+            speak_system_prompt(
+                "Esta acción es sensible. ¿Confirmas (confirmar/sí) o cancelas (cancelar/no)?",
+                "neutral",
+                set_last_utterance_fn=state.set_last_jarvis_utterance,
+                emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+                send_emotion_fn=bus.send_emotion,
+                send_tts_fn=_send_system_tts,
+            )
+            _safe_print("⚠️ Acción local bloqueada: " + str(result.error))
+        else:
+            speak_system_prompt(
+                "No pude completar la acción solicitada.",
+                "neutral",
+                set_last_utterance_fn=state.set_last_jarvis_utterance,
+                emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+                send_emotion_fn=bus.send_emotion,
+                send_tts_fn=_send_system_tts,
+            )
+            _safe_print("⚠️ Acción local fallida: " + str(result.error))
         return
 
     task_type = detect_task_type(user_text)
@@ -307,7 +608,7 @@ def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
         return
 
     if emit_user_subtitle:
-        emit_subtitle(state, avatar.send_json, "user", user_text)
+        emit_subtitle(state, bus.send_raw, "user", user_text)
     add_message("user", user_text)
     apply_thinking(state)
 
@@ -344,7 +645,7 @@ def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
     _safe_print(f"Jarvis [{task_type}] ({emo}): {speech}")
 
     # 1) mood persistente
-    avatar.send_emotion(emo)
+    bus.send_emotion(emo)
 
     # 2) TTS (Azure) -> WS type:"tts"
     if tts_text and have_azure_config():
@@ -372,7 +673,7 @@ def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
                 emotion=emo,
                 session_id=tts_session_key,
                 synthesize_fn=synthesize_chunk,
-                send_fn=avatar.send_raw,
+                send_fn=bus.send_raw,
                 subtitle_fn=None,
                 session_getter=get_tts_session_id,
                 session_token=session_token,
@@ -382,18 +683,27 @@ def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
 
         except Exception as e:
             _safe_print("[AZURE] FAIL -> fallback say: " + repr(e))
-            avatar.send_say(speech, emo)
+            bus.send_say(speech, emo)
     else:
         if not tts_text:
             _safe_print("[TTS] speech vacío -> no mando TTS.")
         elif not have_azure_config():
             _safe_print("[TTS] falta AZURE_KEY/AZURE_REGION -> fallback say.")
-        avatar.send_say(speech, emo)
+        bus.send_say(speech, emo)
 
     # 3) acción windows
     try:
-        result = dispatch_action(data["action"])
-        _safe_print("✔ " + str(result))
+        action_request = action_request_from_dict(data["action"])
+        classification = classify_action(action_request)
+        action_request.requires_confirm = bool(classification["requires_confirm"])
+        action_request.risk = str(classification["risk"])
+        action_request.summary = str(classification["summary"])
+
+        result = dispatch_action(action_request, send_fn=bus.send_confirm, state=state)
+        if result.ok:
+            _safe_print("✔ " + str(result.output))
+        else:
+            _safe_print("⚠️ Acción no ejecutada: " + str(result.error))
     except Exception as e:
         _safe_print("⚠️ Error ejecutando acción: " + str(e))
 
@@ -414,7 +724,9 @@ server_handles = start_local_servers()
 
 avatar = AvatarWSClient("ws://127.0.0.1:8765")
 avatar.start()
+bus = WSTransportBus(avatar)
 tts_session_id = {"value": 0, "key": None}
+_night_state = {"session": None}
 
 def get_tts_session_id() -> int:
     return tts_session_id["value"]
@@ -423,7 +735,7 @@ def cancel_tts_session() -> None:
     tts_session_id["value"] += 1
 
 def on_state_change(payload: dict) -> None:
-    avatar.send_json(payload)
+    bus.send_state(payload)
     if payload.get("conversation_state") == "LISTENING":
         cancel_tts_session()
 
@@ -432,7 +744,7 @@ def on_avatar_message(msg: dict) -> None:
         return
     session_id = msg.get("tts_session_id")
     if session_id and session_id == tts_session_id.get("key"):
-        handle_tts_ended(state)
+        handle_tts_ended(state, pending_action=has_pending_action())
 
 state.set_state_change_handler(on_state_change)
 avatar.set_on_message(on_avatar_message)
