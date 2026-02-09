@@ -124,11 +124,27 @@ def _execute_action(action: ActionRequest) -> ActionResult:
             provider=action.provider,
             ts=time.time(),
         )
-    if action_type in {"calendar_write", "github_write", "screenshare_toggle", "audio_share_toggle"}:
+    if action_type in {"calendar_write", "github_write"}:
+        from core.action_providers.openclaw_provider import OpenClawProvider
+
+        tool_name = "calendar.create" if action_type == "calendar_write" else "github.create_issue"
+        intent = data.get("intent")
+        args = {"intent": intent} if intent else {}
+        preserved_flags = {key: data[key] for key in ("confirm", "confirmed") if key in data}
+        action.provider = "openclaw"
+        action.data = {
+            "tool": tool_name,
+            "args": args,
+            **preserved_flags,
+        }
+        provider = OpenClawProvider()
+        return provider.invoke(action)
+
+    if action_type in {"screenshare_toggle", "audio_share_toggle"}:
         return ActionResult(
             action_id=action.action_id,
             ok=False,
-            output="Pendiente integrar OpenClaw/LiveKit.",
+            output="Pendiente integrar LiveKit.",
             error="not_implemented",
             provider=action.provider,
             ts=time.time(),
