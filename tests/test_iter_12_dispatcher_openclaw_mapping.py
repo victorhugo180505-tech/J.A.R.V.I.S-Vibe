@@ -35,12 +35,12 @@ class DummyState:
         self.states.append(value)
 
 
-def _make_action(action_type: str) -> ActionRequest:
+def _make_action(action_type: str, tool: str) -> ActionRequest:
     return ActionRequest(
         action_id=f"action-{action_type}",
         type=action_type,
-        data={"intent": "demo"},
-        provider="local",
+        data={"tool": tool, "args": {"intent": "demo"}},
+        provider="openclaw",
         requires_confirm=True,
         risk="high",
         summary="demo",
@@ -68,7 +68,7 @@ def test_calendar_write_confirm_flow_maps_to_openclaw(monkeypatch):
         fake_invoke,
     )
 
-    action = _make_action("calendar_write")
+    action = _make_action("calendar_write", "calendar.create")
     sends = []
     state = DummyState()
 
@@ -103,7 +103,7 @@ def test_github_write_confirm_flow_maps_to_openclaw(monkeypatch):
         fake_invoke,
     )
 
-    action = _make_action("github_write")
+    action = _make_action("github_write", "github.create_issue")
     result = dispatch_action(action, send_fn=None, state=DummyState())
     assert result.error == "confirm_required"
 
