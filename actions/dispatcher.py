@@ -51,6 +51,12 @@ def _execute_action(action: ActionRequest) -> ActionResult:
     action_type = action.type
     data = action.data
 
+    if action.provider == "openclaw":
+        from core.action_providers.openclaw_provider import OpenClawProvider
+
+        provider = OpenClawProvider()
+        return provider.invoke(action)
+
     if action_type == "none":
         return ActionResult(
             action_id=action.action_id,
