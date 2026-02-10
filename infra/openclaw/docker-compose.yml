@@ -1,0 +1,17 @@
+version: "3.9"
+
+services:
+  openclaw:
+    image: ${OPENCLOW_IMAGE:-ghcr.io/replace/openclaw:latest}
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "127.0.0.1:${OPENCLOW_HOST_PORT:-8787}:${OPENCLOW_CONTAINER_PORT:-8787}"
+    networks:
+      - openclaw_net
+    # Healthcheck omitted: no known /health endpoint documented for OpenClaw.
+
+networks:
+  openclaw_net:
+    driver: bridge
