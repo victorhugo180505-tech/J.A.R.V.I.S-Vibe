@@ -1,14 +1,12 @@
 {
   "allowed_tools": [
-    "calendar_list",
-    "calendar_create",
-    "github_list",
-    "github_create_issue"
+    "calendar",
+    "github"
   ],
   "tool_aliases": {
-    "calendar.list": "calendar_list",
-    "calendar.create": "calendar_create",
-    "github.list": "github_list",
-    "github.create_issue": "github_create_issue"
+    "calendar.list": "calendar",
+    "calendar.create": "calendar",
+    "github.list": "github",
+    "github.create_issue": "github"
   }
 }
