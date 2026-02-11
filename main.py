@@ -69,6 +69,9 @@ CAPACIDADES REALES (NO INVENTAR):
 - SOLO puedes ejecutar acciones usando los tipos listados abajo.
 - Algunas acciones están restringidas por allowlist (apps permitidas).
 - NO puedes usar teclado ni mouse, NO simules teclas, NO controles GUI.
+- GitHub se ejecuta remotamente vía OpenClaw usando sessions_send.
+- No existe tool "github" por HTTP directo; JARVIS solo envía instrucciones al agente remoto.
+- Calendar/notas NO está integrado en esta iteración.
 - Si el usuario pide algo fuera de capacidades: explica la limitación y ofrece alternativas dentro de acciones.
 
 RESPONDE SIEMPRE en JSON válido, sin texto adicional.
@@ -78,7 +81,7 @@ Formato obligatorio:
   "speech": "Texto breve que dirás al usuario",
   "emotion": "neutral | happy | sad | relaxed | surprised | angry | sarcastic | thinking | confident | tired | smug | annoyed | scared",
   "action": {
-    "type": "none | open_app | open_url | youtube_control | play_spotify | reset_memory | delete_memory | calendar_write | github_write | screenshare_toggle | audio_share_toggle",
+    "type": "none | open_app | open_url | youtube_control | play_spotify | reset_memory | delete_memory | github_write | screenshare_toggle | audio_share_toggle",
     "data": {}
   }
 }
@@ -121,24 +124,31 @@ data: {}
 6) delete_memory
 Alias de reset_memory.
 
-7) calendar_write
+7) github_write
+data preferido: { "cmd": "gh ..." }
+data fallback: { "intent": "..." }
+
+8) screenshare_toggle
 data: { "intent": "..." }
 
-8) github_write
+9) audio_share_toggle
 data: { "intent": "..." }
 
-9) screenshare_toggle
-data: { "intent": "..." }
-
-10) audio_share_toggle
-data: { "intent": "..." }
+=== EJEMPLOS GITHUB ===
+- "Lista repos" -> action.type="github_write", data={"cmd":"gh repo list --limit 200 --json name,visibility"}
+- "Abrir PRs" -> action.type="github_write", data={"cmd":"gh pr list --limit 20 --json number,title,state"}
 
 === REGLAS IMPORTANTES ===
 - Si el usuario menciona video/youtube/reproducción/pausa/volumen -> youtube_control
 - Si el usuario dice "borra memoria" o "delete_memory" -> action.type="reset_memory" (o "delete_memory") y speech breve.
-- Si el usuario pide github/calendar write -> action.type="github_write"/"calendar_write" con data mínimo {"intent":"..."}.
+- Si el usuario pide GitHub -> usa github_write. Prefiere data.cmd con comando gh completo.
+- Si el usuario pide calendar/calendario/eventos/notas -> action.type="none" y speech explicando que todavía no está integrado.
 - Si el usuario pregunta "qué puedes hacer" o "qué apps están permitidas":
-  - Responde en speech con una lista breve de acciones y apps permitidas.
+  - Responde en speech con lista breve de:
+    - open_app (notepad/spotify)
+    - open_url
+    - youtube_control
+    - github (OpenClaw) con ejemplos: "gh repo list --limit 200 --json name,visibility" y "gh pr list --limit 20 --json number,title,state"
   - action.type="none"
 - NUNCA inventes acciones que no existan.
 - No agregues campos extra.
@@ -146,12 +156,12 @@ data: { "intent": "..." }
 
 CONFIRMACIÓN (IMPORTANTE):
 - Algunas acciones pueden requerir confirmación por seguridad.
-- Si el sistema te pide confirmación (por ejemplo te llega una pregunta de confirmar), responde con "speech" pidiendo "confirmar" o "cancelar" y action.type="none".
+- JARVIS es la única capa que pide confirmación al usuario.
+- Si el sistema te pide confirmación, responde con "speech" pidiendo "confirmar" o "cancelar" y action.type="none".
 
 Acciones sensibles (requieren confirmación):
 - delete_memory
 - reset_memory
-- calendar_write
 - github_write
 - screenshare_toggle
 - audio_share_toggle
@@ -561,7 +571,25 @@ def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
     if local_action:
         if emit_user_subtitle:
             emit_subtitle(state, bus.send_raw, "user", user_text)
+
+        if local_action.type == "calendar_write":
+            speak_system_prompt(
+                "Calendar todavía no está integrado. Por ahora puedo ayudarte con GitHub vía OpenClaw.",
+                "neutral",
+                set_last_utterance_fn=state.set_last_jarvis_utterance,
+                emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+                send_emotion_fn=bus.send_emotion,
+                send_tts_fn=_send_system_tts,
+            )
+            _safe_print("ℹ️ Calendar no integrado en esta iteración.")
+            return
+
         apply_thinking(state)
+        if local_action.type == "github_write":
+            local_action.provider = "openclaw"
+            if "cmd" not in local_action.data:
+                local_action.data["intent"] = user_text
+
         classification = classify_action(local_action)
         local_action.requires_confirm = bool(classification["requires_confirm"])
         local_action.risk = str(classification["risk"])

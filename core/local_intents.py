@@ -20,6 +20,9 @@ def detect_intent(text: str) -> ActionRequest | None:
     if cleaned in {"audio_share_toggle", "compartir audio"}:
         return _build_action("audio_share_toggle", raw_text)
 
+    if any(token in cleaned for token in ("lista mis repos", "mis repositorios", "mis repos", "listar repos")):
+        return _build_action("github_write", raw_text, data={"cmd": "gh repo list --limit 200 --json name,visibility"})
+
     if cleaned == "github_write" or ("github" in cleaned and ("issue" in cleaned or "repo" in cleaned)):
         return _build_action("github_write", raw_text)
 
@@ -29,12 +32,12 @@ def detect_intent(text: str) -> ActionRequest | None:
     return None
 
 
-def _build_action(action_type: str, raw_text: str) -> ActionRequest:
+def _build_action(action_type: str, raw_text: str, data: dict | None = None) -> ActionRequest:
     action_id = f"intent-{action_type}-{int(time.time() * 1000)}"
     return ActionRequest(
         action_id=action_id,
         type=action_type,
-        data={"raw": raw_text} if raw_text else {},
+        data=data if data is not None else ({"raw": raw_text} if raw_text else {}),
         provider="local",
         requires_confirm=False,
         risk="unknown",
