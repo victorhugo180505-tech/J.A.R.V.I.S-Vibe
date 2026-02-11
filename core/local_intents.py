@@ -21,15 +21,43 @@ def detect_intent(text: str) -> ActionRequest | None:
         return _build_action("audio_share_toggle", raw_text)
 
     if any(token in cleaned for token in (
+        "solo privados",
+        "privados",
+        "cuáles son privados",
+        "cuales son privados",
+        "dime los privados",
+    )) and not any(token in cleaned for token in ("lista", "listar")):
+        return _build_action("none", raw_text, data={"kind": "github_cached_visibility", "visibility": "PRIVATE"})
+
+    if any(token in cleaned for token in (
+        "solo públicos",
+        "solo publicos",
+        "públicos",
+        "publicos",
+        "cuáles son públicos",
+        "cuales son publicos",
+        "dime los públicos",
+        "dime los publicos",
+    )) and not any(token in cleaned for token in ("lista", "listar")):
+        return _build_action("none", raw_text, data={"kind": "github_cached_visibility", "visibility": "PUBLIC"})
+
+    if any(token in cleaned for token in (
         "dime los nombres de mis repos",
+        "nombres de mis repos",
         "cuáles son mis repos",
         "cuales son mis repos",
         "nombres de los repositorios",
     )):
-        return _build_action("none", raw_text, data={"kind": "github_cached_names"})
+        return _build_action("none", raw_text, data={"kind": "github_cached_names", "visibility": "ALL"})
 
     if any(token in cleaned for token in ("lista mis repos", "mis repositorios", "mis repos", "listar repos")):
-        return _build_action("github_write", raw_text, data={"cmd": "gh repo list --limit 200 --json name,visibility"})
+        if "privad" in cleaned:
+            cmd = "gh repo list --visibility private --limit 200 --json name,visibility"
+        elif "públic" in cleaned or "public" in cleaned:
+            cmd = "gh repo list --visibility public --limit 200 --json name,visibility"
+        else:
+            cmd = "gh repo list --limit 200 --json name,visibility"
+        return _build_action("github_write", raw_text, data={"cmd": cmd})
 
     if cleaned == "github_write" or ("github" in cleaned and ("issue" in cleaned or "repo" in cleaned)):
         return _build_action("github_write", raw_text)

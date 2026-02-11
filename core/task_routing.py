@@ -6,7 +6,7 @@ CODE_HINTS = [
     "python", "c++", "cpp", "java", "javascript", "typescript", "node", "npm", "pip",
     "leetcode", "codeforces", "icpc", "algoritmo", "complexity", "big-o", "dp", "graph",
     "bug", "fix", "refactor", "regex", "sql", "api", "endpoint", "docker", "wsl",
-    "pr", "pull request", "commit",
+    "pull request", "commit",
     "gh ", "git ",
     "```", "class ", "def ", "import ", "#include", "int main", "std::", "public static",
 ]

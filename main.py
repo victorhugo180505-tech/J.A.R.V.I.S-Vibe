@@ -39,6 +39,8 @@ from actions.dispatcher import (
     has_pending_action,
 )
 from core.confirm_prompt import classify_confirm_token, speak_system_prompt
+from core.action_execution_policy import should_dispatch_action
+from core.github_followups import build_cached_repos_response
 from core.task_routing import detect_task_type, strip_force_prefix
 from core.transport.ws_bus import WSTransportBus
 from core.agent.night_session import NightSession
@@ -201,19 +203,25 @@ def _limit_tts_speech(text: str) -> str:
     return clean[:220].rstrip() + "… (detalle en consola)"
 
 
-def _extract_repo_names_from_text(text: str) -> list[str]:
-    names: list[str] = []
+def _extract_repo_items_from_text(text: str) -> list[dict[str, str]]:
+    items: list[dict[str, str]] = []
     for line in (text or "").splitlines():
-        match = re.match(r"^\s*-\s*([^\(\n]+?)(?:\s*\(|\s*$)", line)
+        match = re.match(r"^\s*-\s*([^\(\n]+?)(?:\s*\(([^\)]+)\))?\s*$", line)
         if not match:
             continue
         name = match.group(1).strip().strip(",")
-        if name and name not in names:
-            names.append(name)
-    return names
+        if not name:
+            continue
+        visibility = (match.group(2) or "unknown").strip().upper()
+        if visibility not in {"PUBLIC", "PRIVATE"}:
+            visibility = "UNKNOWN"
+        if any(item.get("name") == name for item in items):
+            continue
+        items.append({"name": name, "visibility": visibility})
+    return items
 
 
-def _extract_repo_names(output_str: str, verbose_text: str = "") -> list[str]:
+def _extract_repo_items(output_str: str, verbose_text: str = "") -> list[dict[str, str]]:
     raw = (output_str or "").strip()
     if raw:
         try:
@@ -221,33 +229,60 @@ def _extract_repo_names(output_str: str, verbose_text: str = "") -> list[str]:
         except Exception:
             parsed = None
         if isinstance(parsed, list):
-            names = []
+            items: list[dict[str, str]] = []
             for item in parsed:
                 if not isinstance(item, dict):
                     continue
                 name = str(item.get("name") or "").strip()
-                if name and name not in names:
-                    names.append(name)
-            if names:
-                return names
+                visibility = str(item.get("visibility") or "UNKNOWN").strip().upper()
+                if visibility not in {"PUBLIC", "PRIVATE"}:
+                    visibility = "UNKNOWN"
+                if name and not any(existing.get("name") == name for existing in items):
+                    items.append({"name": name, "visibility": visibility})
+            if items:
+                return items
 
-    return _extract_repo_names_from_text(verbose_text or raw)
+    return _extract_repo_items_from_text(verbose_text or raw)
 
 
-def _remember_github_repos(repo_names: Iterable[str]) -> None:
-    names = [str(n).strip() for n in repo_names if str(n).strip()]
-    _github_cache["last_github_repos"] = names
+def _remember_github_repos(repo_items: Iterable[dict[str, str]]) -> None:
+    normalized: list[dict[str, str]] = []
+    for item in repo_items:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        visibility = str(item.get("visibility") or "UNKNOWN").strip().upper()
+        if visibility not in {"PUBLIC", "PRIVATE"}:
+            visibility = "UNKNOWN"
+        if not name:
+            continue
+        if any(existing.get("name") == name for existing in normalized):
+            continue
+        normalized.append({"name": name, "visibility": visibility})
+
+    names = [item["name"] for item in normalized]
+    _github_cache["last_github_repos_items"] = normalized
+    _github_cache["last_github_repos_names"] = names
     _github_cache["last_github_repos_ts"] = time.time()
 
 
-def _read_github_repos_cache(max_age_seconds: float = 600.0) -> list[str]:
+def _read_github_repos_cache(max_age_seconds: float = 600.0) -> tuple[list[dict[str, str]], list[str]]:
     ts = float(_github_cache.get("last_github_repos_ts") or 0.0)
-    names = _github_cache.get("last_github_repos") or []
-    if not isinstance(names, list) or not names:
-        return []
+    items = _github_cache.get("last_github_repos_items") or []
+    names = _github_cache.get("last_github_repos_names") or []
+    if not isinstance(items, list):
+        items = []
+    if not isinstance(names, list):
+        names = []
+    if not items and not names:
+        return [], []
     if (time.time() - ts) > max_age_seconds:
-        return []
-    return [str(n) for n in names if str(n).strip()]
+        return [], []
+    safe_items = [item for item in items if isinstance(item, dict) and str(item.get("name") or "").strip()]
+    safe_names = [str(n) for n in names if str(n).strip()]
+    if not safe_names:
+        safe_names = [str(item.get("name")) for item in safe_items if str(item.get("name") or "").strip()]
+    return safe_items, safe_names
 
 
 def render_action_output(action_type: str, output_str: str) -> tuple[str, str]:
@@ -564,7 +599,7 @@ def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
             if verbose_text:
                 _safe_print(verbose_text)
             if action_type == "github_write":
-                _remember_github_repos(_extract_repo_names(str(result.output or ""), verbose_text))
+                _remember_github_repos(_extract_repo_items(str(result.output or ""), verbose_text))
             speak_system_prompt(
                 speech_text if action_type == "github_write" else "Acción confirmada.",
                 "neutral",
@@ -639,15 +674,25 @@ def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
             _safe_print("ℹ️ Calendar no integrado en esta iteración.")
             return
 
-        if local_action.data.get("kind") == "github_cached_names":
-            names = _read_github_repos_cache()
-            if names:
-                response = "Estos son tus repositorios: " + ", ".join(names)
-                _safe_print("\n".join(f"- {name}" for name in names))
-            else:
-                response = "Aún no he consultado GitHub en esta sesión. Pídeme ‘lista mis repositorios’ y luego te digo los nombres."
+        if local_action.type == "none" and str(local_action.data.get("kind", "")).startswith("github_cached_"):
+            cache_items, cache_names = _read_github_repos_cache()
+            visibility_filter = str(local_action.data.get("visibility") or "ALL").upper()
+            response, verbose = build_cached_repos_response(cache_items, cache_names, visibility_filter)
+            if verbose:
+                _safe_print(verbose)
             speak_system_prompt(
                 response,
+                "neutral",
+                set_last_utterance_fn=state.set_last_jarvis_utterance,
+                emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+                send_emotion_fn=bus.send_emotion,
+                send_tts_fn=_send_system_tts,
+            )
+            return
+
+        if local_action.type == "none":
+            speak_system_prompt(
+                "Entendido. Sin acción por ahora.",
                 "neutral",
                 set_last_utterance_fn=state.set_last_jarvis_utterance,
                 emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
@@ -673,7 +718,7 @@ def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
             if verbose_text:
                 _safe_print(verbose_text)
             if local_action.type == "github_write":
-                _remember_github_repos(_extract_repo_names(str(result.output or ""), verbose_text))
+                _remember_github_repos(_extract_repo_items(str(result.output or ""), verbose_text))
             speak_system_prompt(
                 speech_text or "Listo.",
                 "neutral",
@@ -800,6 +845,8 @@ def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
     # 3) acción windows
     try:
         action_request = action_request_from_dict(data["action"])
+        if not should_dispatch_action(action_request.type):
+            return
         classification = classify_action(action_request)
         action_request.requires_confirm = bool(classification["requires_confirm"])
         action_request.risk = str(classification["risk"])
@@ -814,8 +861,9 @@ def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
             if verbose_text:
                 _safe_print(verbose_text)
             if action_request.type == "github_write":
-                names = _extract_repo_names(str(result.output or ""), verbose_text)
-                _remember_github_repos(names)
+                items = _extract_repo_items(str(result.output or ""), verbose_text)
+                _remember_github_repos(items)
+                names = [str(item.get("name")) for item in items if str(item.get("name") or "").strip()]
                 if names:
                     add_message("assistant", f"(github) repos={len(names)}; ejemplo: {', '.join(names[:3])}")
             if speech_text:
@@ -853,7 +901,11 @@ bus = WSTransportBus(avatar)
 tts_session_id = {"value": 0, "key": None}
 _night_state = {"session": None}
 _confirm_state = {"last_execute_ts": 0.0}
-_github_cache = {"last_github_repos": [], "last_github_repos_ts": 0.0}
+_github_cache = {
+    "last_github_repos_items": [],
+    "last_github_repos_names": [],
+    "last_github_repos_ts": 0.0,
+}
 
 def get_tts_session_id() -> int:
     return tts_session_id["value"]
