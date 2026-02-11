@@ -699,7 +699,7 @@ def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
         action_request.risk = str(classification["risk"])
         action_request.summary = str(classification["summary"])
 
-        if action_request.type in {"calendar_write", "github_write"}:
+        if action_request.type == "github_write":
             action_request.provider = "openclaw"
 
         result = dispatch_action(action_request, send_fn=bus.send_confirm, state=state)

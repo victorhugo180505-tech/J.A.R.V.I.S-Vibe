@@ -73,10 +73,9 @@ def test_openclaw_read_alias_invokes_github_tool(monkeypatch):
     assert calls[0]["json"]["tool"] == "github"
 
 
-def test_openclaw_write_requires_confirm_and_resolves_alias(monkeypatch):
+def test_openclaw_write_requires_confirm_and_calls_sessions_send(monkeypatch):
     calls = _install_requests_stub(
         [
-            FakeResponse(404, "Tool not available: github_list"),
             FakeResponse(200, "ok"),
         ]
     )
@@ -89,5 +88,6 @@ def test_openclaw_write_requires_confirm_and_resolves_alias(monkeypatch):
 
     confirmed = confirm_pending_action(send_fn=None, state=DummyState())
     assert confirmed is not None
-    assert calls[0]["json"]["tool"] == "github"
-    assert calls[1]["json"]["tool"] == "github"
+    assert calls[0]["json"]["tool"] == "sessions_send"
+    assert calls[0]["json"]["args"]["sessionKey"] == "agent:main:main"
+    assert "Usa la skill github" in calls[0]["json"]["args"]["message"]

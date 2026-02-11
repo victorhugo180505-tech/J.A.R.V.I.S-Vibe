@@ -1,7 +1,9 @@
 {
   "allowed_tools": [
     "calendar",
-    "github"
+    "github",
+    "sessions_send",
+    "session_status"
   ],
   "tool_aliases": {
     "calendar.list": "calendar",
