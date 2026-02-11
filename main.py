@@ -26,6 +26,7 @@ import re
 import threading
 import time
 from datetime import datetime, timezone
+from typing import Iterable
 from core.actions_contract import action_request_from_dict
 from core.local_intents import detect_intent
 from core.memory import add_message, get_conversation
@@ -38,6 +39,7 @@ from actions.dispatcher import (
     has_pending_action,
 )
 from core.confirm_prompt import classify_confirm_token, speak_system_prompt
+from core.task_routing import detect_task_type, strip_force_prefix
 from core.transport.ws_bus import WSTransportBus
 from core.agent.night_session import NightSession
 from core.agent import tools as night_tools
@@ -199,6 +201,55 @@ def _limit_tts_speech(text: str) -> str:
     return clean[:220].rstrip() + "… (detalle en consola)"
 
 
+def _extract_repo_names_from_text(text: str) -> list[str]:
+    names: list[str] = []
+    for line in (text or "").splitlines():
+        match = re.match(r"^\s*-\s*([^\(\n]+?)(?:\s*\(|\s*$)", line)
+        if not match:
+            continue
+        name = match.group(1).strip().strip(",")
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def _extract_repo_names(output_str: str, verbose_text: str = "") -> list[str]:
+    raw = (output_str or "").strip()
+    if raw:
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, list):
+            names = []
+            for item in parsed:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or "").strip()
+                if name and name not in names:
+                    names.append(name)
+            if names:
+                return names
+
+    return _extract_repo_names_from_text(verbose_text or raw)
+
+
+def _remember_github_repos(repo_names: Iterable[str]) -> None:
+    names = [str(n).strip() for n in repo_names if str(n).strip()]
+    _github_cache["last_github_repos"] = names
+    _github_cache["last_github_repos_ts"] = time.time()
+
+
+def _read_github_repos_cache(max_age_seconds: float = 600.0) -> list[str]:
+    ts = float(_github_cache.get("last_github_repos_ts") or 0.0)
+    names = _github_cache.get("last_github_repos") or []
+    if not isinstance(names, list) or not names:
+        return []
+    if (time.time() - ts) > max_age_seconds:
+        return []
+    return [str(n) for n in names if str(n).strip()]
+
+
 def render_action_output(action_type: str, output_str: str) -> tuple[str, str]:
     if action_type != "github_write":
         text = (output_str or "").strip()
@@ -225,8 +276,7 @@ def render_action_output(action_type: str, output_str: str) -> tuple[str, str]:
     if not repos:
         return ("Listo. Te dejé el resultado en consola.", raw)
 
-    examples = ", ".join(f"{name} ({vis})" for name, vis in repos[:8])
-    speech = f"Listo. Encontré {len(repos)} repos. Ejemplos: {examples}."
+    speech = f"Listo. Encontré {len(repos)} repos. Te digo los {len(repos)} si me lo pides."
     verbose_text = "\n".join(f"- {name} ({vis})" for name, vis in repos)
     return speech, verbose_text
 
@@ -297,49 +347,6 @@ def start_local_servers():
 
 def normalize_text(text: str) -> str:
     return (text or "").strip()
-
-# ===============================
-# Routing: code vs general
-# ===============================
-
-CODE_HINTS = [
-    "error", "exception", "traceback", "stack", "stacktrace", "segfault", "core dumped",
-    "compile", "compila", "compilación", "linker", "undefined reference", "ld:",
-    "python", "c++", "cpp", "java", "javascript", "typescript", "node", "npm", "pip",
-    "leetcode", "codeforces", "icpc", "algoritmo", "complexity", "big-o", "dp", "graph",
-    "bug", "fix", "refactor", "regex", "sql", "api", "endpoint", "docker", "wsl",
-    "git", "github", "pr", "pull request", "commit",
-    "```", "class ", "def ", "import ", "#include", "int main", "std::", "public static",
-]
-
-def detect_task_type(user_text: str) -> str:
-    t = (user_text or "").strip()
-    low = t.lower()
-
-    if low.startswith("/code "):
-        return "code"
-    if low == "/code":
-        return "code"
-    if low.startswith("/chat "):
-        return "general"
-    if low == "/chat":
-        return "general"
-
-    for k in CODE_HINTS:
-        if k in low:
-            return "code"
-    return "general"
-
-def strip_force_prefix(user_text: str) -> str:
-    t = (user_text or "").strip()
-    low = t.lower()
-    if low.startswith("/code "):
-        return t[6:].strip()
-    if low.startswith("/chat "):
-        return t[6:].strip()
-    if low == "/code" or low == "/chat":
-        return ""
-    return user_text
 
 def _safe_print(s: str) -> None:
     try:
@@ -556,6 +563,8 @@ def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
             speech_text, verbose_text = render_action_output(action_type, str(result.output or ""))
             if verbose_text:
                 _safe_print(verbose_text)
+            if action_type == "github_write":
+                _remember_github_repos(_extract_repo_names(str(result.output or ""), verbose_text))
             speak_system_prompt(
                 speech_text if action_type == "github_write" else "Acción confirmada.",
                 "neutral",
@@ -630,6 +639,23 @@ def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
             _safe_print("ℹ️ Calendar no integrado en esta iteración.")
             return
 
+        if local_action.data.get("kind") == "github_cached_names":
+            names = _read_github_repos_cache()
+            if names:
+                response = "Estos son tus repositorios: " + ", ".join(names)
+                _safe_print("\n".join(f"- {name}" for name in names))
+            else:
+                response = "Aún no he consultado GitHub en esta sesión. Pídeme ‘lista mis repositorios’ y luego te digo los nombres."
+            speak_system_prompt(
+                response,
+                "neutral",
+                set_last_utterance_fn=state.set_last_jarvis_utterance,
+                emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+                send_emotion_fn=bus.send_emotion,
+                send_tts_fn=_send_system_tts,
+            )
+            return
+
         apply_thinking(state)
         if local_action.type == "github_write":
             local_action.provider = "openclaw"
@@ -646,6 +672,8 @@ def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
             speech_text, verbose_text = render_action_output(local_action.type, str(result.output or ""))
             if verbose_text:
                 _safe_print(verbose_text)
+            if local_action.type == "github_write":
+                _remember_github_repos(_extract_repo_names(str(result.output or ""), verbose_text))
             speak_system_prompt(
                 speech_text or "Listo.",
                 "neutral",
@@ -717,7 +745,8 @@ def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
     speech = (data.get("speech", "") or "").strip()
     tts_text = prepare_tts_text(_limit_tts_speech(speech))
 
-    add_message("assistant", speech)
+    if data.get("action", {}).get("type") != "github_write":
+        add_message("assistant", speech)
     state.set_last_jarvis_utterance(speech)
     _safe_print(f"Jarvis [{task_type}] ({emo}): {speech}")
 
@@ -784,6 +813,11 @@ def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
             speech_text, verbose_text = render_action_output(action_request.type, str(result.output or ""))
             if verbose_text:
                 _safe_print(verbose_text)
+            if action_request.type == "github_write":
+                names = _extract_repo_names(str(result.output or ""), verbose_text)
+                _remember_github_repos(names)
+                if names:
+                    add_message("assistant", f"(github) repos={len(names)}; ejemplo: {', '.join(names[:3])}")
             if speech_text:
                 speak_system_prompt(
                     speech_text,
@@ -819,6 +853,7 @@ bus = WSTransportBus(avatar)
 tts_session_id = {"value": 0, "key": None}
 _night_state = {"session": None}
 _confirm_state = {"last_execute_ts": 0.0}
+_github_cache = {"last_github_repos": [], "last_github_repos_ts": 0.0}
 
 def get_tts_session_id() -> int:
     return tts_session_id["value"]

@@ -20,6 +20,14 @@ def detect_intent(text: str) -> ActionRequest | None:
     if cleaned in {"audio_share_toggle", "compartir audio"}:
         return _build_action("audio_share_toggle", raw_text)
 
+    if any(token in cleaned for token in (
+        "dime los nombres de mis repos",
+        "cuáles son mis repos",
+        "cuales son mis repos",
+        "nombres de los repositorios",
+    )):
+        return _build_action("none", raw_text, data={"kind": "github_cached_names"})
+
     if any(token in cleaned for token in ("lista mis repos", "mis repositorios", "mis repos", "listar repos")):
         return _build_action("github_write", raw_text, data={"cmd": "gh repo list --limit 200 --json name,visibility"})
 
