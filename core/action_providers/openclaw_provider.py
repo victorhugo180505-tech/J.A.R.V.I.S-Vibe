@@ -104,6 +104,14 @@ class OpenClawProvider:
             log_audit(action_request.action_id, action_request.type, start_ts, ok, "openclaw")
             if not ok:
                 return _result(action_request, ok=False, error=f"http_{response.status_code}", output=body)
+
+            parsed = _parse_json_body(body)
+            if parsed is not None:
+                reply = _extract_openclaw_reply(parsed)
+                if reply:
+                    return _result(action_request, ok=True, output=reply)
+                return _result(action_request, ok=True, output=json.dumps(parsed, ensure_ascii=False)[:2000])
+
             return _result(action_request, ok=True, output=body)
         except requests.Timeout:
             log_audit(action_request.action_id, action_request.type, start_ts, False, "openclaw")
@@ -182,6 +190,31 @@ def _retry_tool_name(raw_tool: str) -> str | None:
     if "calendar" in lowered:
         return "calendar"
     return None
+
+
+def _parse_json_body(body: str) -> dict | list | None:
+    if not isinstance(body, str):
+        return None
+    text = body.strip()
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except Exception:
+        return None
+
+
+def _extract_openclaw_reply(payload: dict | list) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    result = payload.get("result")
+    if not isinstance(result, dict):
+        return None
+    details = result.get("details")
+    if not isinstance(details, dict):
+        return None
+    reply = details.get("reply")
+    return str(reply) if isinstance(reply, str) and reply.strip() else None
 
 
 def _is_confirmed(action_request: ActionRequest) -> bool:

@@ -192,8 +192,47 @@ def prepare_tts_text(text: str) -> str:
     return text
 
 
+def _limit_tts_speech(text: str) -> str:
+    clean = (text or "").strip()
+    if len(clean) <= 220:
+        return clean
+    return clean[:220].rstrip() + "… (detalle en consola)"
+
+
+def render_action_output(action_type: str, output_str: str) -> tuple[str, str]:
+    if action_type != "github_write":
+        text = (output_str or "").strip()
+        return (text or "Listo.", text)
+
+    raw = (output_str or "").strip()
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return ("Listo. Te dejé el resultado en consola.", raw)
+
+    if not isinstance(parsed, list):
+        return ("Listo. Te dejé el resultado en consola.", raw)
+
+    repos = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        vis = str(item.get("visibility") or "UNKNOWN").strip().upper()
+        if name:
+            repos.append((name, vis))
+
+    if not repos:
+        return ("Listo. Te dejé el resultado en consola.", raw)
+
+    examples = ", ".join(f"{name} ({vis})" for name, vis in repos[:8])
+    speech = f"Listo. Encontré {len(repos)} repos. Ejemplos: {examples}."
+    verbose_text = "\n".join(f"- {name} ({vis})" for name, vis in repos)
+    return speech, verbose_text
+
+
 def _send_system_tts(text: str, emotion: str) -> None:
-    tts_text = prepare_tts_text(text)
+    tts_text = prepare_tts_text(_limit_tts_speech(text))
     if tts_text and have_azure_config():
         try:
             from core.azure_tts import synthesize_tts_with_visemes
@@ -500,6 +539,8 @@ def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
     if token == "confirm":
         result = confirm_pending_action(send_fn=bus.send_confirm_result, state=state)
         if result is None:
+            if (time.time() - _confirm_state["last_execute_ts"]) <= 1.5:
+                return
             speak_system_prompt(
                 "No hay ninguna acción pendiente.",
                 "neutral",
@@ -510,8 +551,13 @@ def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
             )
             _safe_print("ℹ️ No hay acción pendiente para confirmar.")
         elif result.ok:
+            _confirm_state["last_execute_ts"] = time.time()
+            action_type = "github_write" if str(result.provider or "") == "openclaw" else "none"
+            speech_text, verbose_text = render_action_output(action_type, str(result.output or ""))
+            if verbose_text:
+                _safe_print(verbose_text)
             speak_system_prompt(
-                f"Acción confirmada. {result.output or ''}".strip(),
+                speech_text if action_type == "github_write" else "Acción confirmada.",
                 "neutral",
                 set_last_utterance_fn=state.set_last_jarvis_utterance,
                 emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
@@ -597,8 +643,11 @@ def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
 
         result = dispatch_action(local_action, send_fn=bus.send_confirm, state=state)
         if result.ok:
+            speech_text, verbose_text = render_action_output(local_action.type, str(result.output or ""))
+            if verbose_text:
+                _safe_print(verbose_text)
             speak_system_prompt(
-                result.output or "Listo.",
+                speech_text or "Listo.",
                 "neutral",
                 set_last_utterance_fn=state.set_last_jarvis_utterance,
                 emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
@@ -666,7 +715,7 @@ def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
 
     emo = normalize_emotion(data.get("emotion", "neutral"))
     speech = (data.get("speech", "") or "").strip()
-    tts_text = prepare_tts_text(speech)
+    tts_text = prepare_tts_text(_limit_tts_speech(speech))
 
     add_message("assistant", speech)
     state.set_last_jarvis_utterance(speech)
@@ -732,7 +781,18 @@ def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
 
         result = dispatch_action(action_request, send_fn=bus.send_confirm, state=state)
         if result.ok:
-            _safe_print("✔ " + str(result.output))
+            speech_text, verbose_text = render_action_output(action_request.type, str(result.output or ""))
+            if verbose_text:
+                _safe_print(verbose_text)
+            if speech_text:
+                speak_system_prompt(
+                    speech_text,
+                    "neutral",
+                    set_last_utterance_fn=state.set_last_jarvis_utterance,
+                    emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+                    send_emotion_fn=bus.send_emotion,
+                    send_tts_fn=_send_system_tts,
+                )
         else:
             _safe_print("⚠️ Acción no ejecutada: " + str(result.error))
     except Exception as e:
@@ -758,6 +818,7 @@ avatar.start()
 bus = WSTransportBus(avatar)
 tts_session_id = {"value": 0, "key": None}
 _night_state = {"session": None}
+_confirm_state = {"last_execute_ts": 0.0}
 
 def get_tts_session_id() -> int:
     return tts_session_id["value"]

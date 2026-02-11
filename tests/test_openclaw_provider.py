@@ -47,7 +47,7 @@ def test_github_write_requires_confirm_without_http(monkeypatch):
 
     def fake_post(*_args, **_kwargs):
         called["post"] = True
-        return DummyResponse(200, "ok")
+        return DummyResponse(200, "{\"result\":{\"details\":{\"reply\":\"[{\\\"name\\\":\\\"repo-a\\\",\\\"visibility\\\":\\\"PUBLIC\\\"}]\"}}}")
 
     monkeypatch.setattr("core.action_providers.openclaw_provider.requests.post", fake_post)
 
@@ -91,6 +91,25 @@ def test_github_write_confirmed_calls_sessions_send(monkeypatch):
     assert called["json"]["args"]["sessionKey"] == "agent:test:session"
     assert "gh issue list" in called["json"]["args"]["message"]
     assert called["timeout"] == 90
+    assert result.output == "[{\"name\":\"repo-a\",\"visibility\":\"PUBLIC\"}]"
+
+
+def test_github_write_without_reply_falls_back_to_json(monkeypatch):
+    monkeypatch.setenv("OPENCLAW_GATEWAY_TOKEN", "token")
+    monkeypatch.setattr("core.action_providers.openclaw_provider._load_allowlist", lambda: {
+        "allowed_tools": ["sessions_send"],
+        "tool_aliases": {},
+    })
+
+    def fake_post(*_args, **_kwargs):
+        return DummyResponse(200, "{\"result\": {\"details\": {\"other\": 1}}}")
+
+    monkeypatch.setattr("core.action_providers.openclaw_provider.requests.post", fake_post)
+
+    provider = OpenClawProvider()
+    result = provider.invoke(_make_action(data={"cmd": "gh repo list"}, confirmed=True, requires_confirm=True))
+    assert result.ok is True
+    assert "other" in (result.output or "")
 
 
 def test_allowlist_blocks_sessions_send(monkeypatch):
