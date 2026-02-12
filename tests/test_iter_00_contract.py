@@ -3,11 +3,9 @@ from urllib import request, error
 
 import pytest
 
-BASE_URL = "http://127.0.0.1:8780"
 
-
-def _request_json(method: str, path: str, data: dict | None = None):
-    url = f"{BASE_URL}{path}"
+def _request_json(base_url: str, method: str, path: str, data: dict | None = None):
+    url = f"{base_url}{path}"
     body = None
     headers = {"Content-Type": "application/json"}
 
@@ -28,15 +26,15 @@ def _request_json(method: str, path: str, data: dict | None = None):
 
 
 @pytest.mark.contract
-def test_health_ok():
-    status, payload = _request_json("GET", "/health")
+def test_health_ok(control_server_base_url):
+    status, payload = _request_json(control_server_base_url, "GET", "/health")
     assert status == 200
     assert payload == {"ok": True}
 
 
 @pytest.mark.contract
-def test_state_keys_present():
-    status, payload = _request_json("GET", "/state")
+def test_state_keys_present(control_server_base_url):
+    status, payload = _request_json(control_server_base_url, "GET", "/state")
     assert status == 200
     for key in (
         "audio_enabled",
@@ -51,17 +49,17 @@ def test_state_keys_present():
 
 
 @pytest.mark.contract
-def test_mic_toggle_flips_state():
-    _, first_toggle = _request_json("POST", "/mic/toggle")
+def test_mic_toggle_flips_state(control_server_base_url):
+    _, first_toggle = _request_json(control_server_base_url, "POST", "/mic/toggle")
     assert "mic_enabled" in first_toggle
 
-    _, first_state = _request_json("GET", "/state")
+    _, first_state = _request_json(control_server_base_url, "GET", "/state")
     expected_first = "LISTENING" if first_toggle["mic_enabled"] else "IDLE"
     assert first_state["conversation_state"] == expected_first
 
-    _, second_toggle = _request_json("POST", "/mic/toggle")
+    _, second_toggle = _request_json(control_server_base_url, "POST", "/mic/toggle")
     assert "mic_enabled" in second_toggle
 
-    _, second_state = _request_json("GET", "/state")
+    _, second_state = _request_json(control_server_base_url, "GET", "/state")
     expected_second = "LISTENING" if second_toggle["mic_enabled"] else "IDLE"
     assert second_state["conversation_state"] == expected_second

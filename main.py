@@ -25,9 +25,26 @@ import queue
 import re
 import threading
 import time
+from datetime import datetime, timezone
+from typing import Iterable
+from core.actions_contract import action_request_from_dict
+from core.local_intents import detect_intent
 from core.memory import add_message, get_conversation
+from core.policy_gate import classify_action
 from core.parser import parse_response
-from actions.dispatcher import dispatch_action
+from actions.dispatcher import (
+    cancel_pending_action,
+    confirm_pending_action,
+    dispatch_action,
+    has_pending_action,
+)
+from core.confirm_prompt import classify_confirm_token, speak_system_prompt
+from core.action_execution_policy import should_dispatch_action
+from core.github_followups import build_cached_repos_response
+from core.task_routing import detect_task_type, strip_force_prefix
+from core.transport.ws_bus import WSTransportBus
+from core.agent.night_session import NightSession
+from core.agent import tools as night_tools
 
 from jarvis_avatar_web.server.avatar_ws_client import AvatarWSClient
 from jarvis_avatar_web.server import mouse_stream_auto
@@ -52,11 +69,14 @@ AZURE_VOICE = "es-MX-DaliaNeural"
 SYSTEM_PROMPT = """
 Eres JARVIS, un asistente virtual que controla una computadora con Windows.
 
-IMPORTANTE:
-- NO puedes usar teclado ni mouse.
-- NO puedes simular teclas.
-- NO puedes escribir letras para controlar aplicaciones.
-- TODA acción debe hacerse usando las acciones disponibles.
+CAPACIDADES REALES (NO INVENTAR):
+- SOLO puedes ejecutar acciones usando los tipos listados abajo.
+- Algunas acciones están restringidas por allowlist (apps permitidas).
+- NO puedes usar teclado ni mouse, NO simules teclas, NO controles GUI.
+- GitHub se ejecuta remotamente vía OpenClaw usando sessions_send.
+- No existe tool "github" por HTTP directo; JARVIS solo envía instrucciones al agente remoto.
+- Calendar/notas NO está integrado en esta iteración.
+- Si el usuario pide algo fuera de capacidades: explica la limitación y ofrece alternativas dentro de acciones.
 
 RESPONDE SIEMPRE en JSON válido, sin texto adicional.
 
@@ -65,7 +85,7 @@ Formato obligatorio:
   "speech": "Texto breve que dirás al usuario",
   "emotion": "neutral | happy | sad | relaxed | surprised | angry | sarcastic | thinking | confident | tired | smug | annoyed | scared",
   "action": {
-    "type": "none | open_app | open_url | youtube_control | play_spotify",
+    "type": "none | open_app | open_url | youtube_control | play_spotify | reset_memory | delete_memory | github_write | screenshare_toggle | audio_share_toggle",
     "data": {}
   }
 }
@@ -73,7 +93,20 @@ Formato obligatorio:
 === ACCIONES DISPONIBLES ===
 
 1) open_app
-data: { "app_name": "nombre de la aplicación" }
+data: { "app_name": "CANONICAL_NAME" }
+
+Apps permitidas (CANONICAL_NAME):
+- notepad
+- spotify
+
+Aliases (entrada del usuario -> CANONICAL_NAME):
+- "bloc de notas" -> notepad
+- "notas" -> notepad
+- "spotify" -> spotify
+
+Regla open_app:
+- Usa SIEMPRE el CANONICAL_NAME anterior.
+- Si el usuario pide una app que NO está en la lista permitida: action.type="none" y en speech di que no está permitida y sugiere preguntar "¿qué apps están permitidas?".
 
 2) open_url
 data: { "url": "https://..." }
@@ -87,16 +120,55 @@ data:
 }
 
 4) play_spotify
-Usar SOLO para música.
+Usar SOLO para música (si el usuario pide música y spotify está permitido).
 
-=== REGLAS ===
-- Si el usuario menciona video, youtube, reproducción, pausa, volumen → youtube_control
-- NUNCA simules teclado
-- Si no hay acción clara → type = "none"
-- No inventes acciones que no existan
-- No agregues campos extra
-- Sé conciso y natural en speech
-- Si preguntan “qué modelo usaste”, NO lo inventes: di que el router decide (general/code) y el modelo exacto se imprime en consola.
+5) reset_memory
+data: {}
+
+6) delete_memory
+Alias de reset_memory.
+
+7) github_write
+data preferido: { "cmd": "gh ..." }
+data fallback: { "intent": "..." }
+
+8) screenshare_toggle
+data: { "intent": "..." }
+
+9) audio_share_toggle
+data: { "intent": "..." }
+
+=== EJEMPLOS GITHUB ===
+- "Lista repos" -> action.type="github_write", data={"cmd":"gh repo list --limit 200 --json name,visibility"}
+- "Abrir PRs" -> action.type="github_write", data={"cmd":"gh pr list --limit 20 --json number,title,state"}
+
+=== REGLAS IMPORTANTES ===
+- Si el usuario menciona video/youtube/reproducción/pausa/volumen -> youtube_control
+- Si el usuario dice "borra memoria" o "delete_memory" -> action.type="reset_memory" (o "delete_memory") y speech breve.
+- Si el usuario pide GitHub -> usa github_write. Prefiere data.cmd con comando gh completo.
+- Si el usuario pide calendar/calendario/eventos/notas -> action.type="none" y speech explicando que todavía no está integrado.
+- Si el usuario pregunta "qué puedes hacer" o "qué apps están permitidas":
+  - Responde en speech con lista breve de:
+    - open_app (notepad/spotify)
+    - open_url
+    - youtube_control
+    - github (OpenClaw) con ejemplos: "gh repo list --limit 200 --json name,visibility" y "gh pr list --limit 20 --json number,title,state"
+  - action.type="none"
+- NUNCA inventes acciones que no existan.
+- No agregues campos extra.
+- Sé conciso.
+
+CONFIRMACIÓN (IMPORTANTE):
+- Algunas acciones pueden requerir confirmación por seguridad.
+- JARVIS es la única capa que pide confirmación al usuario.
+- Si el sistema te pide confirmación, responde con "speech" pidiendo "confirmar" o "cancelar" y action.type="none".
+
+Acciones sensibles (requieren confirmación):
+- delete_memory
+- reset_memory
+- github_write
+- screenshare_toggle
+- audio_share_toggle
 """
 
 SUPPORTED_EMOTIONS = {
@@ -122,6 +194,166 @@ def prepare_tts_text(text: str) -> str:
     text = re.sub(r"\bjarvis\b", "Yarvis", text, flags=re.IGNORECASE)
     text = re.sub(r"\bwow\b", "woooow", text, flags=re.IGNORECASE)
     return text
+
+
+def _limit_tts_speech(text: str) -> str:
+    clean = (text or "").strip()
+    if len(clean) <= 220:
+        return clean
+    return clean[:220].rstrip() + "… (detalle en consola)"
+
+
+def _extract_repo_items_from_text(text: str) -> list[dict[str, str]]:
+    items: list[dict[str, str]] = []
+    for line in (text or "").splitlines():
+        match = re.match(r"^\s*-\s*([^\(\n]+?)(?:\s*\(([^\)]+)\))?\s*$", line)
+        if not match:
+            continue
+        name = match.group(1).strip().strip(",")
+        if not name:
+            continue
+        visibility = (match.group(2) or "unknown").strip().upper()
+        if visibility not in {"PUBLIC", "PRIVATE"}:
+            visibility = "UNKNOWN"
+        if any(item.get("name") == name for item in items):
+            continue
+        items.append({"name": name, "visibility": visibility})
+    return items
+
+
+def _extract_repo_items(output_str: str, verbose_text: str = "") -> list[dict[str, str]]:
+    raw = (output_str or "").strip()
+    if raw:
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, list):
+            items: list[dict[str, str]] = []
+            for item in parsed:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or "").strip()
+                visibility = str(item.get("visibility") or "UNKNOWN").strip().upper()
+                if visibility not in {"PUBLIC", "PRIVATE"}:
+                    visibility = "UNKNOWN"
+                if name and not any(existing.get("name") == name for existing in items):
+                    items.append({"name": name, "visibility": visibility})
+            if items:
+                return items
+
+    return _extract_repo_items_from_text(verbose_text or raw)
+
+
+def _remember_github_repos(repo_items: Iterable[dict[str, str]]) -> None:
+    normalized: list[dict[str, str]] = []
+    for item in repo_items:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        visibility = str(item.get("visibility") or "UNKNOWN").strip().upper()
+        if visibility not in {"PUBLIC", "PRIVATE"}:
+            visibility = "UNKNOWN"
+        if not name:
+            continue
+        if any(existing.get("name") == name for existing in normalized):
+            continue
+        normalized.append({"name": name, "visibility": visibility})
+
+    names = [item["name"] for item in normalized]
+    _github_cache["last_github_repos_items"] = normalized
+    _github_cache["last_github_repos_names"] = names
+    _github_cache["last_github_repos_ts"] = time.time()
+
+
+def _read_github_repos_cache(max_age_seconds: float = 600.0) -> tuple[list[dict[str, str]], list[str]]:
+    ts = float(_github_cache.get("last_github_repos_ts") or 0.0)
+    items = _github_cache.get("last_github_repos_items") or []
+    names = _github_cache.get("last_github_repos_names") or []
+    if not isinstance(items, list):
+        items = []
+    if not isinstance(names, list):
+        names = []
+    if not items and not names:
+        return [], []
+    if (time.time() - ts) > max_age_seconds:
+        return [], []
+    safe_items = [item for item in items if isinstance(item, dict) and str(item.get("name") or "").strip()]
+    safe_names = [str(n) for n in names if str(n).strip()]
+    if not safe_names:
+        safe_names = [str(item.get("name")) for item in safe_items if str(item.get("name") or "").strip()]
+    return safe_items, safe_names
+
+
+def render_action_output(action_type: str, output_str: str) -> tuple[str, str]:
+    if action_type != "github_write":
+        text = (output_str or "").strip()
+        return (text or "Listo.", text)
+
+    raw = (output_str or "").strip()
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return ("Listo. Te dejé el resultado en consola.", raw)
+
+    if not isinstance(parsed, list):
+        return ("Listo. Te dejé el resultado en consola.", raw)
+
+    repos = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        vis = str(item.get("visibility") or "UNKNOWN").strip().upper()
+        if name:
+            repos.append((name, vis))
+
+    if not repos:
+        return ("Listo. Te dejé el resultado en consola.", raw)
+
+    speech = f"Listo. Encontré {len(repos)} repos. Te digo los {len(repos)} si me lo pides."
+    verbose_text = "\n".join(f"- {name} ({vis})" for name, vis in repos)
+    return speech, verbose_text
+
+
+def _send_system_tts(text: str, emotion: str) -> None:
+    tts_text = prepare_tts_text(_limit_tts_speech(text))
+    if tts_text and have_azure_config():
+        try:
+            from core.azure_tts import synthesize_tts_with_visemes
+            apply_speaking(state)
+
+            MAX_AUDIO_B64 = 900_000
+            tts_session_id["value"] += 1
+            session_token = tts_session_id["value"]
+            tts_session_key = f"{int(time.time()*1000)}-{session_token}"
+            tts_session_id["key"] = tts_session_key
+
+            def synthesize_chunk(chunk: str):
+                return synthesize_tts_with_visemes(
+                    chunk,
+                    key=AZURE_KEY,
+                    region=AZURE_REGION,
+                    voice=AZURE_VOICE,
+                )
+
+            send_tts_chunks(
+                tts_text,
+                emotion=emotion,
+                session_id=tts_session_key,
+                synthesize_fn=synthesize_chunk,
+                send_fn=bus.send_raw,
+                subtitle_fn=None,
+                session_getter=get_tts_session_id,
+                session_token=session_token,
+                max_audio_b64=MAX_AUDIO_B64,
+                log_fn=_safe_print,
+            )
+            return
+        except Exception as e:
+            _safe_print("[AZURE] FAIL -> fallback say: " + repr(e))
+
+    bus.send_say(text, emotion)
 
 def start_local_servers():
     stop_handles = {}
@@ -150,49 +382,6 @@ def start_local_servers():
 
 def normalize_text(text: str) -> str:
     return (text or "").strip()
-
-# ===============================
-# Routing: code vs general
-# ===============================
-
-CODE_HINTS = [
-    "error", "exception", "traceback", "stack", "stacktrace", "segfault", "core dumped",
-    "compile", "compila", "compilación", "linker", "undefined reference", "ld:",
-    "python", "c++", "cpp", "java", "javascript", "typescript", "node", "npm", "pip",
-    "leetcode", "codeforces", "icpc", "algoritmo", "complexity", "big-o", "dp", "graph",
-    "bug", "fix", "refactor", "regex", "sql", "api", "endpoint", "docker", "wsl",
-    "git", "github", "pr", "pull request", "commit",
-    "```", "class ", "def ", "import ", "#include", "int main", "std::", "public static",
-]
-
-def detect_task_type(user_text: str) -> str:
-    t = (user_text or "").strip()
-    low = t.lower()
-
-    if low.startswith("/code "):
-        return "code"
-    if low == "/code":
-        return "code"
-    if low.startswith("/chat "):
-        return "general"
-    if low == "/chat":
-        return "general"
-
-    for k in CODE_HINTS:
-        if k in low:
-            return "code"
-    return "general"
-
-def strip_force_prefix(user_text: str) -> str:
-    t = (user_text or "").strip()
-    low = t.lower()
-    if low.startswith("/code "):
-        return t[6:].strip()
-    if low.startswith("/chat "):
-        return t[6:].strip()
-    if low == "/code" or low == "/chat":
-        return ""
-    return user_text
 
 def _safe_print(s: str) -> None:
     try:
@@ -295,8 +484,270 @@ def parse_or_repair_json(
 # ===============================
 
 def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
+    token = classify_confirm_token(user_text)
+    night_input = (user_text or "").strip()
+    if night_input.lower().startswith("night:") or night_input.lower().startswith("/night"):
+        objective = night_input.split(" ", 1)[1].strip() if " " in night_input else night_input.split(":", 1)[-1].strip()
+        if not objective:
+            speak_system_prompt(
+                "Necesito un objetivo para la sesión nocturna.",
+                "neutral",
+                set_last_utterance_fn=state.set_last_jarvis_utterance,
+                emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+                send_emotion_fn=bus.send_emotion,
+                send_tts_fn=_send_system_tts,
+            )
+            return
+        session = NightSession.create(objective, scope={"research_repo", "run_tests", "propose_patch"})
+        session.status = "AWAITING_CONFIRM"
+        session.plan = [
+            "Revisar el repositorio según el objetivo",
+            "Ejecutar pruebas permitidas si aplica",
+            "Generar reporte Markdown",
+        ]
+        _night_state["session"] = session
+        speak_system_prompt(
+            f"Plan listo para: {objective}. Responde 'confirmar noche' o 'cancelar noche'.",
+            "neutral",
+            set_last_utterance_fn=state.set_last_jarvis_utterance,
+            emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+            send_emotion_fn=bus.send_emotion,
+            send_tts_fn=_send_system_tts,
+        )
+        return
+    if night_input.lower() in {"confirmar noche", "confirm night"}:
+        session = _night_state.get("session")
+        if not session or session.status != "AWAITING_CONFIRM":
+            speak_system_prompt(
+                "No hay una sesión nocturna pendiente.",
+                "neutral",
+                set_last_utterance_fn=state.set_last_jarvis_utterance,
+                emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+                send_emotion_fn=bus.send_emotion,
+                send_tts_fn=_send_system_tts,
+            )
+            return
+        session.start()
+        actions_log = []
+        report_lines = [
+            f"# NightSession {session.session_id}",
+            "",
+            f"**Objetivo:** {session.objective}",
+            "",
+            "## Plan",
+        ]
+        for item in session.plan:
+            report_lines.append(f"- [ ] {item}")
+        report_lines.append("")
+        report_lines.append("## Acciones realizadas")
+        start_ts = datetime.now(timezone.utc).isoformat()
+        actions_log.append(f"- {start_ts} Inicio de sesión")
+        pytest_result = night_tools.run_pytest(["-q", "tests"])
+        actions_log.append(f"- {datetime.now(timezone.utc).isoformat()} pytest ok={pytest_result.ok}")
+        report_lines.extend(actions_log)
+        report_lines.append("")
+        report_lines.append("## Resultado pytest")
+        report_lines.append("```")
+        report_lines.append(pytest_result.output)
+        report_lines.append("```")
+        report_lines.append("")
+        report_lines.append("## Riesgos/Pendientes")
+        report_lines.append("- Pendiente revisar tareas adicionales si aplica.")
+        report_path = f"reports/nightly_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M')}_{session.session_id}.md"
+        write_result = night_tools.write_report(report_path, "\n".join(report_lines))
+        session.status = "DONE" if write_result.ok else "CANCELLED"
+        speak_system_prompt(
+            f"Sesión nocturna finalizada. Reporte: {write_result.output}",
+            "neutral",
+            set_last_utterance_fn=state.set_last_jarvis_utterance,
+            emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+            send_emotion_fn=bus.send_emotion,
+            send_tts_fn=_send_system_tts,
+        )
+        return
+    if night_input.lower() in {"cancelar noche", "cancel night"}:
+        session = _night_state.get("session")
+        if session:
+            session.cancel()
+        speak_system_prompt(
+            "Sesión nocturna cancelada.",
+            "neutral",
+            set_last_utterance_fn=state.set_last_jarvis_utterance,
+            emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+            send_emotion_fn=bus.send_emotion,
+            send_tts_fn=_send_system_tts,
+        )
+        return
+    if token == "confirm":
+        result = confirm_pending_action(send_fn=bus.send_confirm_result, state=state)
+        if result is None:
+            if (time.time() - _confirm_state["last_execute_ts"]) <= 1.5:
+                return
+            speak_system_prompt(
+                "No hay ninguna acción pendiente.",
+                "neutral",
+                set_last_utterance_fn=state.set_last_jarvis_utterance,
+                emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+                send_emotion_fn=bus.send_emotion,
+                send_tts_fn=_send_system_tts,
+            )
+            _safe_print("ℹ️ No hay acción pendiente para confirmar.")
+        elif result.ok:
+            _confirm_state["last_execute_ts"] = time.time()
+            action_type = "github_write" if str(result.provider or "") == "openclaw" else "none"
+            speech_text, verbose_text = render_action_output(action_type, str(result.output or ""))
+            if verbose_text:
+                _safe_print(verbose_text)
+            if action_type == "github_write":
+                _remember_github_repos(_extract_repo_items(str(result.output or ""), verbose_text))
+            speak_system_prompt(
+                speech_text if action_type == "github_write" else "Acción confirmada.",
+                "neutral",
+                set_last_utterance_fn=state.set_last_jarvis_utterance,
+                emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+                send_emotion_fn=bus.send_emotion,
+                send_tts_fn=_send_system_tts,
+            )
+            _safe_print("✔ " + str(result.output))
+        elif result.error == "not_implemented":
+            speak_system_prompt(
+                "Confirmado, pero aún no está implementado.",
+                "neutral",
+                set_last_utterance_fn=state.set_last_jarvis_utterance,
+                emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+                send_emotion_fn=bus.send_emotion,
+                send_tts_fn=_send_system_tts,
+            )
+            _safe_print("⚠️ Acción no implementada.")
+        else:
+            speak_system_prompt(
+                "No se pudo completar la acción.",
+                "neutral",
+                set_last_utterance_fn=state.set_last_jarvis_utterance,
+                emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+                send_emotion_fn=bus.send_emotion,
+                send_tts_fn=_send_system_tts,
+            )
+            _safe_print("⚠️ Acción no ejecutada: " + str(result.error))
+        return
+    if token == "cancel":
+        result = cancel_pending_action(send_fn=bus.send_confirm_result, state=state)
+        if result is None:
+            speak_system_prompt(
+                "No hay ninguna acción pendiente.",
+                "neutral",
+                set_last_utterance_fn=state.set_last_jarvis_utterance,
+                emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+                send_emotion_fn=bus.send_emotion,
+                send_tts_fn=_send_system_tts,
+            )
+            _safe_print("ℹ️ No hay acción pendiente para cancelar.")
+        else:
+            speak_system_prompt(
+                "Acción cancelada.",
+                "neutral",
+                set_last_utterance_fn=state.set_last_jarvis_utterance,
+                emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+                send_emotion_fn=bus.send_emotion,
+                send_tts_fn=_send_system_tts,
+            )
+            _safe_print("⚠️ Acción cancelada.")
+        return
     user_text = normalize_text(user_text)
     if not user_text:
+        return
+
+    local_action = detect_intent(user_text)
+    if local_action:
+        if emit_user_subtitle:
+            emit_subtitle(state, bus.send_raw, "user", user_text)
+
+        if local_action.type == "calendar_write":
+            speak_system_prompt(
+                "Calendar todavía no está integrado. Por ahora puedo ayudarte con GitHub vía OpenClaw.",
+                "neutral",
+                set_last_utterance_fn=state.set_last_jarvis_utterance,
+                emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+                send_emotion_fn=bus.send_emotion,
+                send_tts_fn=_send_system_tts,
+            )
+            _safe_print("ℹ️ Calendar no integrado en esta iteración.")
+            return
+
+        if local_action.type == "none" and str(local_action.data.get("kind", "")).startswith("github_cached_"):
+            cache_items, cache_names = _read_github_repos_cache()
+            visibility_filter = str(local_action.data.get("visibility") or "ALL").upper()
+            response, verbose = build_cached_repos_response(cache_items, cache_names, visibility_filter)
+            if verbose:
+                _safe_print(verbose)
+            speak_system_prompt(
+                response,
+                "neutral",
+                set_last_utterance_fn=state.set_last_jarvis_utterance,
+                emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+                send_emotion_fn=bus.send_emotion,
+                send_tts_fn=_send_system_tts,
+            )
+            return
+
+        if local_action.type == "none":
+            speak_system_prompt(
+                "Entendido. Sin acción por ahora.",
+                "neutral",
+                set_last_utterance_fn=state.set_last_jarvis_utterance,
+                emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+                send_emotion_fn=bus.send_emotion,
+                send_tts_fn=_send_system_tts,
+            )
+            return
+
+        apply_thinking(state)
+        if local_action.type == "github_write":
+            local_action.provider = "openclaw"
+            if "cmd" not in local_action.data:
+                local_action.data["intent"] = user_text
+
+        classification = classify_action(local_action)
+        local_action.requires_confirm = bool(classification["requires_confirm"])
+        local_action.risk = str(classification["risk"])
+        local_action.summary = str(classification["summary"])
+
+        result = dispatch_action(local_action, send_fn=bus.send_confirm, state=state)
+        if result.ok:
+            speech_text, verbose_text = render_action_output(local_action.type, str(result.output or ""))
+            if verbose_text:
+                _safe_print(verbose_text)
+            if local_action.type == "github_write":
+                _remember_github_repos(_extract_repo_items(str(result.output or ""), verbose_text))
+            speak_system_prompt(
+                speech_text or "Listo.",
+                "neutral",
+                set_last_utterance_fn=state.set_last_jarvis_utterance,
+                emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+                send_emotion_fn=bus.send_emotion,
+                send_tts_fn=_send_system_tts,
+            )
+            _safe_print("✔ " + str(result.output))
+        elif result.error == "confirm_required":
+            speak_system_prompt(
+                "Esta acción es sensible. ¿Confirmas (confirmar/sí) o cancelas (cancelar/no)?",
+                "neutral",
+                set_last_utterance_fn=state.set_last_jarvis_utterance,
+                emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+                send_emotion_fn=bus.send_emotion,
+                send_tts_fn=_send_system_tts,
+            )
+            _safe_print("⚠️ Acción local bloqueada: " + str(result.error))
+        else:
+            speak_system_prompt(
+                "No pude completar la acción solicitada.",
+                "neutral",
+                set_last_utterance_fn=state.set_last_jarvis_utterance,
+                emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+                send_emotion_fn=bus.send_emotion,
+                send_tts_fn=_send_system_tts,
+            )
+            _safe_print("⚠️ Acción local fallida: " + str(result.error))
         return
 
     task_type = detect_task_type(user_text)
@@ -307,7 +758,7 @@ def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
         return
 
     if emit_user_subtitle:
-        emit_subtitle(state, avatar.send_json, "user", user_text)
+        emit_subtitle(state, bus.send_raw, "user", user_text)
     add_message("user", user_text)
     apply_thinking(state)
 
@@ -337,14 +788,15 @@ def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
 
     emo = normalize_emotion(data.get("emotion", "neutral"))
     speech = (data.get("speech", "") or "").strip()
-    tts_text = prepare_tts_text(speech)
+    tts_text = prepare_tts_text(_limit_tts_speech(speech))
 
-    add_message("assistant", speech)
+    if data.get("action", {}).get("type") != "github_write":
+        add_message("assistant", speech)
     state.set_last_jarvis_utterance(speech)
     _safe_print(f"Jarvis [{task_type}] ({emo}): {speech}")
 
     # 1) mood persistente
-    avatar.send_emotion(emo)
+    bus.send_emotion(emo)
 
     # 2) TTS (Azure) -> WS type:"tts"
     if tts_text and have_azure_config():
@@ -372,7 +824,7 @@ def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
                 emotion=emo,
                 session_id=tts_session_key,
                 synthesize_fn=synthesize_chunk,
-                send_fn=avatar.send_raw,
+                send_fn=bus.send_raw,
                 subtitle_fn=None,
                 session_getter=get_tts_session_id,
                 session_token=session_token,
@@ -382,18 +834,49 @@ def handle_user_text(user_text: str, *, emit_user_subtitle: bool = True):
 
         except Exception as e:
             _safe_print("[AZURE] FAIL -> fallback say: " + repr(e))
-            avatar.send_say(speech, emo)
+            bus.send_say(speech, emo)
     else:
         if not tts_text:
             _safe_print("[TTS] speech vacío -> no mando TTS.")
         elif not have_azure_config():
             _safe_print("[TTS] falta AZURE_KEY/AZURE_REGION -> fallback say.")
-        avatar.send_say(speech, emo)
+        bus.send_say(speech, emo)
 
     # 3) acción windows
     try:
-        result = dispatch_action(data["action"])
-        _safe_print("✔ " + str(result))
+        action_request = action_request_from_dict(data["action"])
+        if not should_dispatch_action(action_request.type):
+            return
+        classification = classify_action(action_request)
+        action_request.requires_confirm = bool(classification["requires_confirm"])
+        action_request.risk = str(classification["risk"])
+        action_request.summary = str(classification["summary"])
+
+        if action_request.type == "github_write":
+            action_request.provider = "openclaw"
+
+        result = dispatch_action(action_request, send_fn=bus.send_confirm, state=state)
+        if result.ok:
+            speech_text, verbose_text = render_action_output(action_request.type, str(result.output or ""))
+            if verbose_text:
+                _safe_print(verbose_text)
+            if action_request.type == "github_write":
+                items = _extract_repo_items(str(result.output or ""), verbose_text)
+                _remember_github_repos(items)
+                names = [str(item.get("name")) for item in items if str(item.get("name") or "").strip()]
+                if names:
+                    add_message("assistant", f"(github) repos={len(names)}; ejemplo: {', '.join(names[:3])}")
+            if speech_text:
+                speak_system_prompt(
+                    speech_text,
+                    "neutral",
+                    set_last_utterance_fn=state.set_last_jarvis_utterance,
+                    emit_subtitle_fn=lambda role, text: emit_subtitle(state, bus.send_raw, role, text),
+                    send_emotion_fn=bus.send_emotion,
+                    send_tts_fn=_send_system_tts,
+                )
+        else:
+            _safe_print("⚠️ Acción no ejecutada: " + str(result.error))
     except Exception as e:
         _safe_print("⚠️ Error ejecutando acción: " + str(e))
 
@@ -414,7 +897,15 @@ server_handles = start_local_servers()
 
 avatar = AvatarWSClient("ws://127.0.0.1:8765")
 avatar.start()
+bus = WSTransportBus(avatar)
 tts_session_id = {"value": 0, "key": None}
+_night_state = {"session": None}
+_confirm_state = {"last_execute_ts": 0.0}
+_github_cache = {
+    "last_github_repos_items": [],
+    "last_github_repos_names": [],
+    "last_github_repos_ts": 0.0,
+}
 
 def get_tts_session_id() -> int:
     return tts_session_id["value"]
@@ -423,7 +914,7 @@ def cancel_tts_session() -> None:
     tts_session_id["value"] += 1
 
 def on_state_change(payload: dict) -> None:
-    avatar.send_json(payload)
+    bus.send_state(payload)
     if payload.get("conversation_state") == "LISTENING":
         cancel_tts_session()
 
@@ -432,7 +923,7 @@ def on_avatar_message(msg: dict) -> None:
         return
     session_id = msg.get("tts_session_id")
     if session_id and session_id == tts_session_id.get("key"):
-        handle_tts_ended(state)
+        handle_tts_ended(state, pending_action=has_pending_action())
 
 state.set_state_change_handler(on_state_change)
 avatar.set_on_message(on_avatar_message)
